@@ -1,4 +1,4 @@
-# IWR6843AoP + ESP32 Connection Guide
+# ESP32 Connection Guide
 
 ## Overview
 

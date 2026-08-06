@@ -1,4 +1,4 @@
-# IWR6843AoP Radar Knowledge Base
+# IWR6843AoP Sensor Reference
 
 Everything learned while setting up and operating the uRAD Industrial IWR6843AoP mmWave radar with a Raspberry Pi.
 
@@ -257,7 +257,7 @@ The ESP32 is a potentially better host than the Pi for this sensor:
 - **Remote flashing possible**: with one added wire from SOP2 pad to ESP32 GPIO
 - **Tradeoff**: needs C/C++ (ESP-IDF), not Python; limited processing power
 
-See `ESP32_CONNECTION.md` for full wiring and architecture details.
+See [`esp32-connection.md`](esp32-connection.md) for full wiring and architecture details.
 
 ---
 

@@ -1,4 +1,4 @@
-# IWR6843AoP Point Cloud Reader - Setup Guide
+# Raspberry Pi Setup — Point Cloud Reader
 
 ## Architecture
 
