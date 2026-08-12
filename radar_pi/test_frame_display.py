@@ -13,9 +13,11 @@ Run from the radar_pi/ directory:
     python3 -m unittest test_frame_display -v
 """
 
+import io
+import contextlib
 import unittest
 
-from frame_display import format_frame
+from frame_display import format_frame, print_frame
 
 
 def _tracking_frame():
@@ -44,6 +46,19 @@ class FormatFrameTests(unittest.TestCase):
 
     def test_renders_none_as_empty(self):
         self.assertEqual(format_frame(None), '')
+
+    def test_print_frame_none_outputs_nothing(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            print_frame(None)
+        self.assertEqual(buf.getvalue(), '')
+
+    def test_print_frame_valid_outputs_rendered_text(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            print_frame(_tracking_frame())
+        self.assertIn('3D People Tracking', buf.getvalue())
+        self.assertIn('[id= 0]', buf.getvalue())
 
     def test_tracking_header_line_tags_3d_people_tracking(self):
         out = format_frame(_tracking_frame())

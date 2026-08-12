@@ -20,15 +20,14 @@ the server uses to confirm it received a fully-decoded tracking frame.
 
 import math
 
-# --- TLV 1011 special codes (mirror tlv_parser.TRACK_INDEX_*) ----------------
-_TRACK_INDEX_WEAK_SNR = 253
-_TRACK_INDEX_BOUNDS = 254
-_TRACK_INDEX_NOISE = 255
+from tlv_parser import (
+    TRACK_INDEX_BOUNDS, TRACK_INDEX_NOISE, TRACK_INDEX_WEAK_SNR,
+)
 
 _INDEX_LABELS = {
-    _TRACK_INDEX_WEAK_SNR: 'weak SNR',
-    _TRACK_INDEX_BOUNDS: 'out of bounds',
-    _TRACK_INDEX_NOISE: 'noise',
+    TRACK_INDEX_WEAK_SNR: 'weak SNR',
+    TRACK_INDEX_BOUNDS: 'out of bounds',
+    TRACK_INDEX_NOISE: 'noise',
 }
 
 
@@ -106,3 +105,10 @@ def format_frame(data):
                 f"az={azimuth:6.1f}deg  SNR={s:5.1f}{track_str}")
 
     return '\n'.join(parts)
+
+
+def print_frame(data):
+    """Format a parsed frame and write it to stdout (no-op for ``None``)."""
+    text = format_frame(data)
+    if text:
+        print(text)

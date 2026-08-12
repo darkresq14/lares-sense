@@ -28,7 +28,7 @@ import os
 import argparse
 
 from tlv_parser import parse_frame, MAGIC_WORD
-from frame_display import format_frame
+from frame_display import print_frame
 
 # ---------- constants ----------
 CLI_BAUD = 115200
@@ -119,15 +119,10 @@ def read_one_frame(ser):
 
 
 # ---------- display ----------
-# Frame rendering lives in frame_display.format_frame (shared with the UDP
-# receiver, unit-tested on hand-built dicts). This file is now a thin serial
-# loop: find magic word -> read frame -> call parse_frame -> print via
-# format_frame.
-def print_frame(data):
-    """Print a parsed frame to the console via the shared formatter."""
-    text = format_frame(data)
-    if text:
-        print(text)
+# Frame rendering (point cloud + tracks + heights + indexes) lives in
+# frame_display.print_frame, shared with the UDP receiver and unit-tested on
+# hand-built dicts. This file is a thin serial loop: find magic word -> read
+# frame -> parse_frame -> print_frame.
 
 
 # ---------- main ----------

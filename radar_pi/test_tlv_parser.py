@@ -88,7 +88,7 @@ def range_payload(bins):
 
 # TLV 1020 (compressed spherical point cloud) decompression units:
 # (elevationUnit, azimuthUnit, dopplerUnit, rangeUnit, snrUnit) - 5 floats.
-_PC_PUNIT_STRUCT = '<5f'
+_PC_UNIT_STRUCT = '<5f'
 # per point: elevation(i8), azimuth(i8), doppler(i16), range(u16), snr(u16)
 _PC_POINT_STRUCT = '<2bh2H'
 
@@ -100,7 +100,7 @@ def compressed_pc_payload(punit, points):
     of (elevation int8, azimuth int8, doppler int16, range uint16, snr uint16)
     raw integer tuples as the firmware emits them.
     """
-    payload = struct.pack(_PC_PUNIT_STRUCT, *punit)
+    payload = struct.pack(_PC_UNIT_STRUCT, *punit)
     for el, az, dop, rng, snr in points:
         payload += struct.pack(_PC_POINT_STRUCT, el, az, dop, rng, snr)
     return payload

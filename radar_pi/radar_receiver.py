@@ -18,21 +18,16 @@ import argparse
 import sys
 
 from tlv_parser import parse_frame, MAGIC_WORD
-from frame_display import format_frame
+from frame_display import print_frame
 
 # ---------- constants ----------
 DEFAULT_PORT = 5005
 RECV_BUFFER_SIZE = 65536
 
 
-# Frame rendering lives in frame_display.format_frame (shared with the Pi
-# reader). parse_frame/MAGIC_WORD come from tlv_parser; this file keeps the UDP
-# socket loop.
-def print_frame(data):
-    """Print a parsed frame to the console via the shared formatter."""
-    text = format_frame(data)
-    if text:
-        print(text)
+# Frame rendering (point cloud + tracks + heights + indexes) lives in
+# frame_display.print_frame, shared with the Pi reader. parse_frame/MAGIC_WORD
+# come from tlv_parser; this file keeps the UDP socket loop.
 
 
 # ---------- main ----------
@@ -105,8 +100,13 @@ def main():
                     # Confirm the first fully-decoded 3D People Tracking frame
                     # (point cloud + tracks + heights + indexes) so the whole
                     # sensor -> Pi -> server pipe is visibly green in the log.
-                    is_tracking = bool(parsed.get('tracks') or parsed.get('track_heights'))
-                    if is_tracking:
+                    # Require ALL four sections: a frame with tracks but missing
+                    # points/indexes must not trip a false success.
+                    fully_decoded = bool(parsed.get('points')
+                                         and parsed.get('tracks')
+                                         and parsed.get('track_heights')
+                                         and parsed.get('track_indexes'))
+                    if fully_decoded:
                         tracking_frame_count += 1
                         if tracking_frame_count == 1:
                             print("*** Received first fully-decoded 3D People "
