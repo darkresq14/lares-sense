@@ -1,15 +1,17 @@
 # lares-sense
 
 mmWave radar (IWR6843AoP) point-cloud sensing, parsed over UART and streamed as
-UDP. The radar runs the TI Out-of-Box Demo firmware; host code parses the binary
-TLV frames and forwards point clouds to a server.
+UDP. The host code parses TI's binary TLV frames and forwards them to a server,
+supporting both the **Out-of-Box Demo** and the **3D People Tracking** demo
+(point cloud + tracks + heights + per-point track indexes).
 
 ## Architecture
 
 ```
    IWR6843AoP ──UART──► Host (Pi 3B / ESP32) ──UDP──► Server
-   (Out-of-Box            parse TLV frames              radar_receiver.py
-    Demo firmware)        send to <server>:5005         prints point clouds
+   (OOB Demo or          parse TLV frames            radar_receiver.py
+    3D People Tracking)  send to <server>:5005         prints point clouds
+                                                         + tracks + heights
 ```
 
 Two supported hosts:
@@ -18,6 +20,10 @@ Two supported hosts:
   [`docs/hardware/pi-setup.md`](docs/hardware/pi-setup.md).
 - **ESP32** — dual UART, built-in WiFi, cheaper, no host PC needed. See
   [`docs/hardware/esp32-connection.md`](docs/hardware/esp32-connection.md).
+
+The frame parser (`radar_pi/tlv_parser.py`) is transport-agnostic and
+decodes both demo formats from a raw frame buffer, so the same UDP path carries
+either firmware's output.
 
 ## Repository layout
 
@@ -54,6 +60,35 @@ lares-sense/
 
 4. To stream over UDP: run `radar_pi/radar_receiver.py` on the server, then
    `radar_pi/radar_sender.py` on the Pi (see pi-setup guide for ports + firewall).
+
+## 3D People Tracking
+
+The same reader works with TI's **3D People Tracking** demo, which streams an
+extended TLV set the parser also decodes:
+
+| TLV  | Name          | Decoded as |
+|------|---------------|------------|
+| 1020 | Point cloud   | compressed spherical → cartesian x,y,z + doppler + SNR |
+| 1010 | Target list   | per track: id + position/velocity/acceleration + error covariance + g + confidence |
+| 1012 | Target height | per track: max_z / min_z |
+| 1011 | Target index  | per detected point: which track it belongs to (253/254/255 = not associated) |
+
+To run it, flash the 3D People Tracking firmware
+(`3D_people_track_6843_demo.bin` from the Radar Toolbox) via UniFlash — a
+human-performed hardware step — then on the Pi:
+
+```bash
+# receiver on the server
+python3 radar_pi/radar_receiver.py --port 5005
+
+# sender on the Pi (selects the AOP 3D People Tracking config)
+python3 radar_pi/radar_sender.py --host <SERVER_IP> \
+  --config radar_pi/xwr6843_aop_3d_people_track_6m.cfg
+```
+
+The receiver logs a banner on the first fully-decoded tracking frame (point
+cloud + tracks + heights + indexes), proving the sensor → Pi → server pipe is
+green.
 
 ## Vendor tools & docs (`docs_and_tools/`)
 

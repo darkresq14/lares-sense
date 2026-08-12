@@ -16,17 +16,24 @@ any GUI**. It exists so the frame format can be decoded on a captured buffer
 with no hardware attached, and shared by every transport (Pi single-UART
 reader, UDP sender/receiver, and later the 3D People Tracking pipeline).
 
-Out-of-Box Demo TLVs currently decoded (mmWave SDK 3.6 regression baseline):
+Out-of-Box Demo TLVs decoded (mmWave SDK 3.6 regression baseline):
 
     1  - Detected Points          (x, y, z, doppler  - 4 x float32 per point)
     2  - Range Profile            (one uint32 per range bin)
     7  - Detected Points Side Info (snr, noise       - 2 x uint16 per point)
 
-The 3D People Tracking TLV type IDs are exposed as constants below so the next
-ticket (#3) can fill in their decoders. Until then those TLVs are recognised
-but skipped, so they never break Out-of-Box parsing.
+3D People Tracking demo TLVs decoded (Radar Toolbox ``3D_people_track_6843``):
+
+    1020 - Compressed Point Cloud  (spherical -> cartesian x, y, z, doppler + snr)
+    1010 - Target List             (trackData: id + pos/vel/acc + error cov + g + conf)
+    1012 - Target Height           (heightData: per-track max_z / min_z)
+    1011 - Target Index            (trackIndexes: track id per detected point)
+
+Any other TLV type is recognised by length and skipped, so an unrecognised TLV
+never breaks parsing of the rest of the frame.
 """
 
+import math
 import struct
 
 # --- Frame sync --------------------------------------------------------------
@@ -51,12 +58,18 @@ TLV_DETECTED_POINTS = 1            # x, y, z, doppler (4 x float32 / point)
 TLV_RANGE_PROFILE = 2              # one uint32 per range bin
 TLV_DETECTED_POINTS_SIDE_INFO = 7  # snr, noise (2 x uint16 / point)
 
-# --- 3D People Tracking TLV types (placeholders; decoders land in #3) --------
+# --- 3D People Tracking TLV types (mmWave SDK 3.6 + Radar Toolbox) ----------
+#
+# The 3D People Tracking demo (3D_people_track_6843) emits a different TLV set
+# than the Out-of-Box Demo: the point cloud is a *compressed spherical* cloud
+# (TLV 1020, decoded to cartesian here), plus the tracker outputs below.
+# See ``docs/hardware/sensor-reference.md`` and the demo source in
+# ``docs_and_tools/.../3D_People_Tracking/src/6843/mss/mss_main.c``.
 
-TLV_TRACK_TARGET_LIST = 1010    # trackData
-TLV_TRACK_TARGET_INDEX = 1011   # trackIndexes
-TLV_TRACK_TARGET_HEIGHT = 1012  # heightData
-TLV_TRACK_POINT_CLOUD = 1020    # extended point cloud
+TLV_TRACK_POINT_CLOUD = 1020    # compressed spherical point cloud (range/az/el/dop/snr)
+TLV_TRACK_TARGET_LIST = 1010    # trackData   - per track: id + pos/vel/acc + ec[16] + g + conf
+TLV_TRACK_TARGET_INDEX = 1011   # trackIndexes - one track id per detected point
+TLV_TRACK_TARGET_HEIGHT = 1012  # heightData  - per track: max_z / min_z
 
 # --- Sanity bounds -----------------------------------------------------------
 
@@ -74,6 +87,33 @@ _RANGE_BIN_SIZE = struct.calcsize(_RANGE_BIN_STRUCT)  # 4
 
 #: scale factor for the side-info SNR/noise fields (stored in 0.1 dB units).
 dB_SCALE = 0.1
+
+# --- 3D People Tracking per-record struct sizes -----------------------------
+
+#: TLV 1020 decompression units: elevationUnit, azimuthUnit, dopplerUnit,
+#: rangeUnit, snrUnit (5 x float32).
+_PC_UNIT_STRUCT = '<5f'
+_PC_UNIT_SIZE = struct.calcsize(_PC_UNIT_STRUCT)        # 20
+#: TLV 1020 per point: elevation(i8), azimuth(i8), doppler(i16), range(u16),
+#: snr(u16). Signed widths handle the firmware's int8/int16 sign extension.
+_PC_POINT_STRUCT = '<2bh2H'
+_PC_POINT_SIZE = struct.calcsize(_PC_POINT_STRUCT)       # 8
+
+#: TLV 1010 per track: tid(uint32) + 27 float32 (pos/vel/acc + ec[16] + g + conf).
+_TARGET_STRUCT = '<I27f'
+_TARGET_SIZE = struct.calcsize(_TARGET_STRUCT)          # 112
+
+#: TLV 1012 per track: tid(uint32) + max_z(float) + min_z(float).
+_HEIGHT_STRUCT = '<I2f'
+_HEIGHT_SIZE = struct.calcsize(_HEIGHT_STRUCT)          # 12
+
+#: TLV 1011 per detected point: one uint8 track id (253/254/255 = not associated).
+_TARGET_INDEX_SIZE = 1
+
+#: Special TLV 1011 codes for points not associated with any track.
+TRACK_INDEX_WEAK_SNR = 253   # point not associated, SNR too weak
+TRACK_INDEX_BOUNDS = 254     # point outside the boundary of interest
+TRACK_INDEX_NOISE = 255      # point not associated, considered noise
 
 
 def _decode_detected_points(payload, num_detected_obj):
@@ -108,6 +148,96 @@ def _decode_range_profile(payload):
             for i in range(count)]
 
 
+# --- 3D People Tracking decoders --------------------------------------------
+
+def _decode_compressed_point_cloud(payload, num_detected_obj):
+    """Decode TLV 1020 -> (points, snr) for the 3D People Tracking demo.
+
+    The firmware emits a *compressed spherical* point cloud: a 20-byte unit
+    block (5 float32 scale factors) followed by one 8-byte point each. Each
+    point stores signed elevation/azimuth (int8, in unit-radians), signed
+    doppler (int16, in m/s-units), unsigned range (uint16, in m-units) and
+    unsigned SNR (uint16, linear units). Points are decompressed to spherical
+    and converted to cartesian (x, y, z) the same way TI's reference visualiser
+    does (``sphericalToCartesianPointCloud``):
+
+        x = range * sin(azimuth)   * cos(elevation)
+        y = range * cos(azimuth)   * cos(elevation)
+        z = range * sin(elevation)
+
+    Returns a ``(points, snr)`` pair matching the OOB TLV 1/7 shape so callers
+    can treat the detected point cloud uniformly regardless of demo. ``points``
+    is a list of (x, y, z, doppler) tuples; ``snr`` is per-point linear SNR.
+    """
+    points, snr = [], []
+    if num_detected_obj <= 0 or len(payload) < _PC_UNIT_SIZE:
+        return points, snr
+
+    (elev_unit, az_unit, dop_unit, range_unit, snr_unit) = struct.unpack_from(
+        _PC_UNIT_STRUCT, payload, 0)
+
+    available = (len(payload) - _PC_UNIT_SIZE) // _PC_POINT_SIZE
+    count = min(num_detected_obj, available)
+    base = _PC_UNIT_SIZE
+    for i in range(count):
+        elevation, azimuth, doppler, rng_raw, snr_raw = struct.unpack_from(
+            _PC_POINT_STRUCT, payload, base + i * _PC_POINT_SIZE)
+        rng = rng_raw * range_unit
+        az = azimuth * az_unit
+        el = elevation * elev_unit
+        ce = math.cos(el)
+        points.append((rng * math.sin(az) * ce,
+                       rng * math.cos(az) * ce,
+                       rng * math.sin(el),
+                       doppler * dop_unit))
+        snr.append(snr_raw * snr_unit)
+    return points, snr
+
+
+def _decode_target_list(payload):
+    """Decode TLV 1010 -> list of track dicts (trackData).
+
+    Each track is 112 bytes: uint32 ``tid`` + 27 float32 = position(3),
+    velocity(3), acceleration(3), error covariance[16] (4x4, row-major),
+    g, confidence.
+    """
+    tracks = []
+    count = len(payload) // _TARGET_SIZE
+    for i in range(count):
+        d = struct.unpack_from(_TARGET_STRUCT, payload, i * _TARGET_SIZE)
+        tracks.append({
+            'tid': d[0],
+            'position': list(d[1:4]),
+            'velocity': list(d[4:7]),
+            'acceleration': list(d[7:10]),
+            'error_covariance': list(d[10:26]),
+            'g': d[26],
+            'confidence': d[27],
+        })
+    return tracks
+
+
+def _decode_target_height(payload):
+    """Decode TLV 1012 -> list of {'tid', 'max_z', 'min_z'} (heightData)."""
+    heights = []
+    count = len(payload) // _HEIGHT_SIZE
+    for i in range(count):
+        tid, max_z, min_z = struct.unpack_from(_HEIGHT_STRUCT, payload, i * _HEIGHT_SIZE)
+        heights.append({'tid': tid, 'max_z': max_z, 'min_z': min_z})
+    return heights
+
+
+def _decode_target_index(payload, num_detected_obj):
+    """Decode TLV 1011 -> list of track ids, one per detected point.
+
+    Values 253/254/255 (see :data:`TRACK_INDEX_*`) mean the point was not
+    associated with any track (weak SNR / out of bounds / noise).
+    """
+    available = len(payload) // _TARGET_INDEX_SIZE
+    count = min(num_detected_obj, available) if num_detected_obj > 0 else available
+    return [payload[i] for i in range(count)]
+
+
 def parse_frame(frame_data):
     """Parse one TI mmWave SDK frame buffer into a dict.
 
@@ -120,12 +250,18 @@ def parse_frame(frame_data):
 
     ``frame_num``      int   - frame counter from the header
     ``num_points``     int   - header's numDetectedObj
-    ``points``         list  - (x, y, z, doppler) tuples (TLV 1)
-    ``snr``            list  - per-point SNR in dB (TLV 7)
-    ``noise``          list  - per-point noise in dB (TLV 7)
+    ``points``         list  - (x, y, z, doppler) tuples (TLV 1 or TLV 1020)
+    ``snr``            list  - per-point SNR (TLV 7 in dB, or TLV 1020 linear)
+    ``noise``          list  - per-point noise in dB (TLV 7; empty for 3D PT)
     ``range_profile``  list  - uint32 range-bin values (TLV 2)
+    ``tracks``         list  - track dicts (TLV 1010 / trackData)
+    ``track_heights``  list  - height dicts (TLV 1012 / heightData)
+    ``track_indexes``  list  - per-point track id (TLV 1011 / trackIndexes)
 
-    Any list is empty when its TLV is absent from the frame.
+    Any list is empty when its TLV is absent from the frame. ``points``/``snr``
+    are filled by TLV 1/7 for the Out-of-Box Demo or by TLV 1020 for the 3D
+    People Tracking demo, so the detected point cloud has one shape regardless
+    of which firmware produced the frame.
     """
     if frame_data is None or len(frame_data) < HEADER_LEN:
         return None
@@ -141,6 +277,7 @@ def parse_frame(frame_data):
         return None
 
     points, snr, noise, range_profile = [], [], [], []
+    tracks, track_heights, track_indexes = [], [], []
 
     offset = HEADER_LEN
     for _ in range(num_tlvs):
@@ -162,9 +299,15 @@ def parse_frame(frame_data):
             snr, noise = _decode_side_info(payload, num_detected_obj)
         elif tlv_type == TLV_RANGE_PROFILE:
             range_profile = _decode_range_profile(payload)
-        # 3D People Tracking TLVs (1010/1011/1012/1020) are recognised by their
-        # constants above but not decoded yet, so they are skipped here.
-        # Their decoders are added in #3.
+        elif tlv_type == TLV_TRACK_POINT_CLOUD:
+            points, snr = _decode_compressed_point_cloud(payload, num_detected_obj)
+        elif tlv_type == TLV_TRACK_TARGET_LIST:
+            tracks = _decode_target_list(payload)
+        elif tlv_type == TLV_TRACK_TARGET_HEIGHT:
+            track_heights = _decode_target_height(payload)
+        elif tlv_type == TLV_TRACK_TARGET_INDEX:
+            track_indexes = _decode_target_index(payload, num_detected_obj)
+        # Any other TLV type is unrecognised and skipped.
 
     return {
         'frame_num': frame_num,
@@ -173,4 +316,7 @@ def parse_frame(frame_data):
         'snr': snr,
         'noise': noise,
         'range_profile': range_profile,
+        'tracks': tracks,
+        'track_heights': track_heights,
+        'track_indexes': track_indexes,
     }
