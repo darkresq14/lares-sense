@@ -44,6 +44,7 @@ lares-sense/
 |-----|----------------|
 | [`docs/hardware/sensor-reference.md`](docs/hardware/sensor-reference.md) | Sensor specs, firmware, UART TLV protocol, Pi 3B UART issue, TI ecosystem |
 | [`docs/hardware/pi-setup.md`](docs/hardware/pi-setup.md) | Raspberry Pi wiring, prerequisites, step-by-step setup, troubleshooting |
+| [`docs/hardware/flashing.md`](docs/hardware/flashing.md) | Reflash firmware over USB (UniFlash): prep, GUI + headless, bench verify, troubleshooting |
 | [`docs/hardware/esp32-connection.md`](docs/hardware/esp32-connection.md) | ESP32 wiring, dual-UART architecture, remote flashing |
 
 ## Quick start (Raspberry Pi)
@@ -75,7 +76,8 @@ extended TLV set the parser also decodes:
 
 To run it, flash the 3D People Tracking firmware
 (`3D_people_track_6843_demo.bin` from the Radar Toolbox) via UniFlash — a
-human-performed hardware step — then on the Pi:
+human-performed hardware step; see
+[`docs/hardware/flashing.md`](docs/hardware/flashing.md) — then on the Pi:
 
 ```bash
 # receiver on the server

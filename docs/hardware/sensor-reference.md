@@ -86,6 +86,9 @@ radar_toolbox_4_00_00_05/source/ti/examples/Out_Of_Box_Demo/prebuilt_binaries/ou
 - Flash via the config UART port (Enhanced COM / UARTA)
 - After flashing, set SOP2=LOW and reset
 
+See [`flashing.md`](flashing.md) for the full step-by-step procedure (prep,
+UniFlash GUI, headless re-flash, bench verify, troubleshooting).
+
 **Firmware verification**: Send config + sensorStart over UART. If the sensor has the correct firmware, it will start streaming binary frames. No response = wrong/missing firmware or UART issue.
 
 **TI ecosystem for firmware**:
