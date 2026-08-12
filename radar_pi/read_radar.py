@@ -23,18 +23,13 @@ import math
 import sys
 import os
 import argparse
-import numpy as np
+
+from tlv_parser import parse_frame, MAGIC_WORD
 
 # ---------- constants ----------
-UART_MAGIC_WORD = bytearray(b'\x02\x01\x04\x03\x06\x05\x08\x07')
 CLI_BAUD = 115200
 DATA_BAUD = 921600
 DEFAULT_PORT = '/dev/serial0'
-
-# TLV types we care about
-TLV_DETECTED_POINTS = 1
-TLV_RANGE_PROFILE = 2
-TLV_DETECTED_POINTS_SIDE_INFO = 7
 
 
 # ---------- config sending ----------
@@ -82,7 +77,7 @@ def find_magic_word(ser):
         if len(byte) < 1:
             continue  # timeout, keep trying
 
-        if byte[0] == UART_MAGIC_WORD[index]:
+        if byte[0] == MAGIC_WORD[index]:
             index += 1
             frame_data.append(byte[0])
             if index == 8:
@@ -119,101 +114,11 @@ def read_one_frame(ser):
     return frame_data
 
 
-# ---------- frame parsing ----------
-def parse_frame(frame_data):
-    """Parse a standard mmWave SDK output frame and return point cloud + side info."""
-    # Frame header: magic(8) + version(4) + totalPacketLen(4) + platform(4) +
-    #               frameNum(4) + timeCPUCycles(4) + numDetectedObj(4) + numTLVs(4) + subFrameNum(4)
-    header_struct = 'Q8I'  # 8 bytes magic + 8 x uint32 = 40 bytes
-    header_len = struct.calcsize(header_struct)
-
-    if len(frame_data) < header_len:
-        return None
-
-    try:
-        magic, version, total_packet_len, platform, frame_num, \
-            time_cpu_cycles, num_detected_obj, num_tlvs, sub_frame_num = \
-            struct.unpack(header_struct, frame_data[:header_len])
-    except struct.error:
-        return None
-
-    if num_detected_obj > 10000:
-        return None
-
-    # Initialize output
-    point_cloud = np.zeros((num_detected_obj, 4))  # x, y, z, doppler
-    snr_array = np.zeros(num_detected_obj)
-    noise_array = np.zeros(num_detected_obj)
-    range_profile = []
-
-    # Parse TLVs
-    offset = header_len
-    tlv_header_len = 8  # type(4) + length(4)
-
-    for i in range(num_tlvs):
-        if offset + tlv_header_len > len(frame_data):
-            break
-
-        tlv_type, tlv_length = struct.unpack('<2I', frame_data[offset:offset + tlv_header_len])
-        offset += tlv_header_len
-
-        if offset + tlv_length > len(frame_data):
-            break
-
-        tlv_data = frame_data[offset:offset + tlv_length]
-
-        if tlv_type == TLV_DETECTED_POINTS and num_detected_obj > 0:
-            # Each point: x(float), y(float), z(float), doppler(float) = 16 bytes
-            point_struct = '4f'
-            point_size = struct.calcsize(point_struct)
-            num_points = min(num_detected_obj, tlv_length // point_size)
-
-            for j in range(num_points):
-                try:
-                    x, y, z, doppler = struct.unpack(point_struct,
-                                                      tlv_data[j * point_size:(j + 1) * point_size])
-                    point_cloud[j] = [x, y, z, doppler]
-                except struct.error:
-                    break
-
-        elif tlv_type == TLV_DETECTED_POINTS_SIDE_INFO and num_detected_obj > 0:
-            # Each point: snr(uint16), noise(uint16) = 4 bytes
-            side_struct = '2H'
-            side_size = struct.calcsize(side_struct)
-            num_points = min(num_detected_obj, tlv_length // side_size)
-
-            for j in range(num_points):
-                try:
-                    snr, noise = struct.unpack(side_struct,
-                                               tlv_data[j * side_size:(j + 1) * side_size])
-                    snr_array[j] = snr * 0.1      # convert from 0.1 dB to dB
-                    noise_array[j] = noise * 0.1   # convert from 0.1 dB to dB
-                except struct.error:
-                    break
-
-        elif tlv_type == TLV_RANGE_PROFILE:
-            # Each range bin: uint32
-            num_bins = tlv_length // 4
-            for j in range(num_bins):
-                try:
-                    val = struct.unpack('<I', tlv_data[j * 4:(j + 1) * 4])[0]
-                    range_profile.append(val)
-                except struct.error:
-                    break
-
-        offset += tlv_length
-
-    return {
-        'frame_num': frame_num,
-        'num_points': num_detected_obj,
-        'points': point_cloud,       # Nx4: x, y, z, doppler
-        'snr': snr_array,            # N: SNR in dB
-        'noise': noise_array,        # N: noise in dB
-        'range_profile': range_profile,
-    }
-
-
 # ---------- display ----------
+# Frame parsing lives in tlv_parser.py: transport-agnostic, no serial/GUI/numpy
+# dependency, unit-testable on captured buffers. This file is now a thin serial
+# loop (find magic word -> read frame -> call parse_frame -> print); parse_frame
+# is imported above.
 def print_frame(data):
     """Print parsed frame data to console."""
     if data is None:
@@ -229,15 +134,19 @@ def print_frame(data):
         return
 
     # Count points with meaningful coordinates (not all-zero)
-    active = np.any(pts[:n, :3] != 0, axis=1)
-    active_count = int(np.sum(active))
+    num_pts = min(n, len(pts))
+    active_count = 0
+    for i in range(num_pts):
+        x, y, z, _ = pts[i]
+        if x != 0.0 or y != 0.0 or z != 0.0:
+            active_count += 1
 
     print(f"  Frame {fn:5d} | {n} points ({active_count} non-zero)")
 
     # Print each point
-    for i in range(n):
+    for i in range(num_pts):
         x, y, z, doppler = pts[i]
-        s = snr[i]
+        s = snr[i] if i < len(snr) else 0.0
 
         # Calculate range and azimuth from cartesian
         rng = math.sqrt(x * x + y * y + z * z)

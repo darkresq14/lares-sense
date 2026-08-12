@@ -17,88 +17,16 @@ import math
 import argparse
 import sys
 
+from tlv_parser import parse_frame, MAGIC_WORD
+
 # ---------- constants ----------
-MAGIC_WORD = bytearray(b'\x02\x01\x04\x03\x06\x05\x08\x07')
-
-TLV_DETECTED_POINTS = 1
-TLV_DETECTED_POINTS_SIDE_INFO = 7
-
 DEFAULT_PORT = 5005
 RECV_BUFFER_SIZE = 65536
 
 
-# ---------- frame parsing ----------
-def parse_frame(frame_data):
-    """Parse a TI mmWave SDK frame. Returns dict with point cloud data."""
-    header_struct = 'Q8I'  # 8 bytes magic + 8 x uint32 = 40 bytes
-    header_len = struct.calcsize(header_struct)
-
-    if len(frame_data) < header_len:
-        return None
-
-    try:
-        magic, version, total_packet_len, platform, frame_num, \
-            time_cpu_cycles, num_detected_obj, num_tlvs, sub_frame_num = \
-            struct.unpack(header_struct, frame_data[:header_len])
-    except struct.error:
-        return None
-
-    if num_detected_obj > 10000:
-        return None
-
-    points = []
-    snr_values = []
-    noise_values = []
-
-    offset = header_len
-    tlv_header_len = 8
-
-    for i in range(num_tlvs):
-        if offset + tlv_header_len > len(frame_data):
-            break
-
-        tlv_type, tlv_length = struct.unpack('<2I', frame_data[offset:offset + tlv_header_len])
-        offset += tlv_header_len
-
-        if offset + tlv_length > len(frame_data):
-            break
-
-        tlv_data = frame_data[offset:offset + tlv_length]
-
-        if tlv_type == TLV_DETECTED_POINTS and num_detected_obj > 0:
-            point_size = struct.calcsize('4f')
-            num_points = min(num_detected_obj, tlv_length // point_size)
-            for j in range(num_points):
-                try:
-                    x, y, z, doppler = struct.unpack('4f',
-                        tlv_data[j * point_size:(j + 1) * point_size])
-                    points.append((x, y, z, doppler))
-                except struct.error:
-                    break
-
-        elif tlv_type == TLV_DETECTED_POINTS_SIDE_INFO and num_detected_obj > 0:
-            side_size = struct.calcsize('2H')
-            num_points = min(num_detected_obj, tlv_length // side_size)
-            for j in range(num_points):
-                try:
-                    snr, noise = struct.unpack('2H',
-                        tlv_data[j * side_size:(j + 1) * side_size])
-                    snr_values.append(snr * 0.1)
-                    noise_values.append(noise * 0.1)
-                except struct.error:
-                    break
-
-        offset += tlv_length
-
-    return {
-        'frame_num': frame_num,
-        'num_points': num_detected_obj,
-        'points': points,
-        'snr': snr_values,
-        'noise': noise_values,
-    }
-
-
+# Frame parsing lives in tlv_parser.py (shared with the Pi reader); parse_frame
+# and MAGIC_WORD are imported above. This file keeps the UDP socket loop and
+# its own console printer.
 def print_frame(data):
     """Print parsed frame to console."""
     if data is None:

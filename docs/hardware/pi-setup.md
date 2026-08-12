@@ -20,6 +20,7 @@ In single UART mode the Pi does NOT receive config ACKs (those go out on a separ
 ## Files
 
 - `read_radar.py` - Local point cloud reader (single UART mode)
+- `tlv_parser.py` - Transport-agnostic TI frame/TLV parser (no serial/GUI/numpy dep; shared by reader + receiver; unit-tested without hardware)
 - `radar_sender.py` - Reads radar via UART, streams raw TI frames over UDP to a server
 - `radar_receiver.py` - Listens for UDP, parses TI frames, prints point clouds (pure stdlib)
 - `xwr6843_aop_out_of_box.cfg` - Radar CLI configuration for the out-of-box demo
@@ -42,7 +43,7 @@ scp read_radar.py xwr6843_aop_out_of_box.cfg <PI_HOST>:~/
 ### Step 2: Install Python dependencies on the Pi
 
 ```bash
-ssh <PI_HOST> "python3 -m venv ~/radar_env && ~/radar_env/bin/pip install pyserial numpy"
+ssh <PI_HOST> "python3 -m venv ~/radar_env && ~/radar_env/bin/pip install pyserial"
 ```
 
 ### Step 3: Check serial port availability

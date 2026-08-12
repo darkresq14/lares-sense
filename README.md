@@ -48,7 +48,7 @@ lares-sense/
 3. On the Pi:
 
    ```bash
-   python3 -m venv ~/radar_env && ~/radar_env/bin/pip install pyserial numpy
+   python3 -m venv ~/radar_env && ~/radar_env/bin/pip install pyserial
    ~/radar_env/bin/python3 radar_pi/read_radar.py
    ```
 

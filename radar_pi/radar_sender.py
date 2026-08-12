@@ -17,9 +17,9 @@ import socket
 import argparse
 
 from read_radar import (
-    send_config, read_one_frame, parse_frame, print_frame,
-    CLI_BAUD, DATA_BAUD, DEFAULT_PORT
+    send_config, read_one_frame, CLI_BAUD, DATA_BAUD, DEFAULT_PORT
 )
+from tlv_parser import parse_frame
 import serial
 
 
