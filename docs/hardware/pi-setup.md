@@ -28,7 +28,7 @@ In single UART mode the Pi does NOT receive config ACKs (those go out on a separ
 
 ## Prerequisites
 
-- The Out of Box Demo firmware must already be flashed on the sensor (it ships pre-loaded)
+- The Out of Box Demo firmware must already be flashed on the sensor (it ships pre-loaded). To reflash or switch firmware, see [`flashing.md`](flashing.md).
 - The DIP switch must be in **Functional mode** (OFF / low position)
 - Both red and green LEDs should be ON when powered in functional mode
 

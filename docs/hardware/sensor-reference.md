@@ -86,6 +86,9 @@ radar_toolbox_4_00_00_05/source/ti/examples/Out_Of_Box_Demo/prebuilt_binaries/ou
 - Flash via the config UART port (Enhanced COM / UARTA)
 - After flashing, set SOP2=LOW and reset
 
+See [`flashing.md`](flashing.md) for the full step-by-step procedure (prep,
+UniFlash GUI, headless re-flash, bench verify, troubleshooting).
+
 **Firmware verification**: Send config + sensorStart over UART. If the sensor has the correct firmware, it will start streaming binary frames. No response = wrong/missing firmware or UART issue.
 
 **TI ecosystem for firmware**:
@@ -130,11 +133,22 @@ Each TLV has an 8-byte header:
 
 ### Important TLV types
 
+Out-of-Box Demo TLVs:
+
 | Type ID | Name | Payload per point | Fields |
 |---------|------|-------------------|--------|
 | 1 | Detected Points | 16 bytes (4 x float32) | X(m), Y(m), Z(m), Doppler(m/s) |
 | 2 | Range Profile | 4 bytes per bin (uint32) | One value per range bin |
 | 7 | Detected Points Side Info | 4 bytes (2 x uint16) | SNR(0.1dB units), Noise(0.1dB units) |
+
+3D People Tracking demo TLVs (Radar Toolbox `3D_people_track_6843`):
+
+| Type ID | Name | Layout | Fields |
+|---------|------|--------|--------|
+| 1020 | Compressed Point Cloud | 20-byte unit block (5 x float32) + 8 bytes/point (`2bh2H`) | elevation, azimuth, doppler, range, snr (raw ints, scaled by the units) → decoded to cartesian X/Y/Z + doppler + SNR |
+| 1010 | Target List (trackData) | 112 bytes/track (`I27f`) | tid + posX/Y/Z + velX/Y/Z + accX/Y/Z + error covariance[16] + g + confidence |
+| 1012 | Target Height (heightData) | 12 bytes/track (`I2f`) | tid + max_z + min_z |
+| 1011 | Target Index (trackIndexes) | 1 byte/point (`B`) | track id per detected point; 253=weak SNR, 254=out of bounds, 255=noise |
 
 Type 1 is sent when `guiMonitor` has detected objects bit set and there are detections.
 Type 7 is sent when `guiMonitor` has detected objects bit = 2.
@@ -266,6 +280,8 @@ See [`esp32-connection.md`](esp32-connection.md) for full wiring and architectur
 | File | Path |
 |------|------|
 | OOB firmware binary | `source/ti/examples/Out_Of_Box_Demo/prebuilt_binaries/out_of_box_6843_aop.bin` |
+| 3D People Tracking firmware | `source/ti/examples/Industrial_and_Personal_Electronics/People_Tracking/3D_People_Tracking/prebuilt_binaries/3D_people_track_6843_demo.bin` |
+| 3D PT AOP chirp config | `source/ti/examples/Industrial_and_Personal_Electronics/People_Tracking/3D_People_Tracking/chirp_configs/AOP_6m_default.cfg` |
 | OOB demo docs | `source/ti/examples/Out_Of_Box_Demo/docs/Out_Of_Box_Demo_User_Guide.html` |
 | Parser code (Python) | `tools/visualizers/Applications_Visualizer/common/parseTLVs.py` |
 | Frame parser | `tools/visualizers/Applications_Visualizer/common/parseFrame.py` |

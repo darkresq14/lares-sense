@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Listens for raw TI mmWave radar frames over UDP, parses them,
-and prints point cloud data to the console.
+Listens for raw TI mmWave radar frames over UDP, parses them, and prints the
+decoded frame to the console - point cloud, and for the 3D People Tracking
+demo also tracks, per-track heights and per-point track indexes.
 
 Each UDP datagram should contain one complete TI frame (starting
 with the magic word 02 01 04 03 06 05 08 07).
@@ -13,51 +14,20 @@ Runs on the server. No external dependencies. Usage:
 import socket
 import struct
 import time
-import math
 import argparse
 import sys
 
 from tlv_parser import parse_frame, MAGIC_WORD
+from frame_display import print_frame
 
 # ---------- constants ----------
 DEFAULT_PORT = 5005
 RECV_BUFFER_SIZE = 65536
 
 
-# Frame parsing lives in tlv_parser.py (shared with the Pi reader); parse_frame
-# and MAGIC_WORD are imported above. This file keeps the UDP socket loop and
-# its own console printer.
-def print_frame(data):
-    """Print parsed frame to console."""
-    if data is None:
-        return
-
-    n = data['num_points']
-    fn = data['frame_num']
-    pts = data['points']
-    snr = data['snr']
-
-    if n == 0:
-        print(f"  Frame {fn:5d} | 0 detected points")
-        return
-
-    print(f"  Frame {fn:5d} | {n} points")
-
-    for i in range(min(n, len(pts))):
-        x, y, z, doppler = pts[i]
-        s = snr[i] if i < len(snr) else 0.0
-
-        rng = math.sqrt(x * x + y * y + z * z)
-        if abs(y) > 0.001:
-            azimuth = math.degrees(math.atan2(x, y))
-        elif x >= 0:
-            azimuth = 90.0
-        else:
-            azimuth = -90.0
-
-        print(f"    [{i:3d}] x={x:7.3f} y={y:7.3f} z={z:7.3f}  "
-              f"v={doppler:6.2f} m/s  range={rng:6.3f}m  "
-              f"az={azimuth:6.1f}deg  SNR={s:5.1f}dB")
+# Frame rendering (point cloud + tracks + heights + indexes) lives in
+# frame_display.print_frame, shared with the Pi reader. parse_frame/MAGIC_WORD
+# come from tlv_parser; this file keeps the UDP socket loop.
 
 
 # ---------- main ----------
@@ -79,6 +49,7 @@ def main():
     # Buffer for accumulating data across datagrams
     buf = bytearray()
     frame_count = 0
+    tracking_frame_count = 0
 
     try:
         while True:
@@ -126,6 +97,21 @@ def main():
                 parsed = parse_frame(frame_data)
                 if parsed is not None:
                     frame_count += 1
+                    # Confirm the first fully-decoded 3D People Tracking frame
+                    # (point cloud + tracks + heights + indexes) so the whole
+                    # sensor -> Pi -> server pipe is visibly green in the log.
+                    # Require ALL four sections: a frame with tracks but missing
+                    # points/indexes must not trip a false success.
+                    fully_decoded = bool(parsed.get('points')
+                                         and parsed.get('tracks')
+                                         and parsed.get('track_heights')
+                                         and parsed.get('track_indexes'))
+                    if fully_decoded:
+                        tracking_frame_count += 1
+                        if tracking_frame_count == 1:
+                            print("*** Received first fully-decoded 3D People "
+                                  "Tracking frame (point cloud + tracks + "
+                                  "heights + indexes) ***")
                     print_frame(parsed)
 
     except KeyboardInterrupt:

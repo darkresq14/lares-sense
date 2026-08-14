@@ -8,6 +8,10 @@ the magic word), so the receiver can parse frames the same way.
 
 Runs on Raspberry Pi. Usage:
     python3 radar_sender.py --host <SERVER_IP> [--port 5005]
+
+For 3D People Tracking, pass the AOP tracking config:
+    --config radar_pi/xwr6843_aop_3d_people_track_6m.cfg
+The default config is the Out-of-Box Demo.
 """
 
 import sys
@@ -109,7 +113,9 @@ def main():
                 frame_count += 1
                 fn = parsed['frame_num']
                 n = parsed['num_points']
-                print(f"  Frame {fn:5d} | {n} points | {len(raw_frame)} bytes -> {args.host}:{args.port}")
+                n_tracks = len(parsed['tracks'])
+                print(f"  Frame {fn:5d} | {n} points | {n_tracks} tracks | "
+                      f"{len(raw_frame)} bytes -> {args.host}:{args.port}")
             else:
                 error_count += 1
 

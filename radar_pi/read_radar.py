@@ -14,17 +14,21 @@ This means only ONE serial port is used (/dev/serial0):
 
 Usage:
     python3 read_radar.py [--port PORT] [--config CFG]
+
+Configs ship in this directory:
+  xwr6843_aop_out_of_box.cfg            Out-of-Box Demo (default)
+  xwr6843_aop_3d_people_track_6m.cfg     3D People Tracking (tracks/heights/indexes)
 """
 
 import serial
 import struct
 import time
-import math
 import sys
 import os
 import argparse
 
 from tlv_parser import parse_frame, MAGIC_WORD
+from frame_display import print_frame
 
 # ---------- constants ----------
 CLI_BAUD = 115200
@@ -115,51 +119,10 @@ def read_one_frame(ser):
 
 
 # ---------- display ----------
-# Frame parsing lives in tlv_parser.py: transport-agnostic, no serial/GUI/numpy
-# dependency, unit-testable on captured buffers. This file is now a thin serial
-# loop (find magic word -> read frame -> call parse_frame -> print); parse_frame
-# is imported above.
-def print_frame(data):
-    """Print parsed frame data to console."""
-    if data is None:
-        return
-
-    n = data['num_points']
-    fn = data['frame_num']
-    pts = data['points']
-    snr = data['snr']
-
-    if n == 0:
-        print(f"  Frame {fn:5d} | 0 detected points")
-        return
-
-    # Count points with meaningful coordinates (not all-zero)
-    num_pts = min(n, len(pts))
-    active_count = 0
-    for i in range(num_pts):
-        x, y, z, _ = pts[i]
-        if x != 0.0 or y != 0.0 or z != 0.0:
-            active_count += 1
-
-    print(f"  Frame {fn:5d} | {n} points ({active_count} non-zero)")
-
-    # Print each point
-    for i in range(num_pts):
-        x, y, z, doppler = pts[i]
-        s = snr[i] if i < len(snr) else 0.0
-
-        # Calculate range and azimuth from cartesian
-        rng = math.sqrt(x * x + y * y + z * z)
-        if abs(y) > 0.001:
-            azimuth = math.degrees(math.atan2(x, y))
-        elif x >= 0:
-            azimuth = 90.0
-        else:
-            azimuth = -90.0
-
-        print(f"    [{i:3d}] x={x:7.3f} y={y:7.3f} z={z:7.3f}  "
-              f"v={doppler:6.2f} m/s  range={rng:6.3f}m  "
-              f"az={azimuth:6.1f}deg  SNR={s:5.1f}dB")
+# Frame rendering (point cloud + tracks + heights + indexes) lives in
+# frame_display.print_frame, shared with the UDP receiver and unit-tested on
+# hand-built dicts. This file is a thin serial loop: find magic word -> read
+# frame -> parse_frame -> print_frame.
 
 
 # ---------- main ----------
