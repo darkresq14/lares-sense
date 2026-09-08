@@ -12,6 +12,9 @@ supporting both the **Out-of-Box Demo** and the **3D People Tracking** demo
    (OOB Demo or          parse TLV frames            radar_receiver.py
     3D People Tracking)  send to <server>:5005         prints point clouds
                                                          + tracks + heights
+                                                        radar_persist.py
+                                                          stores frames in
+                                                          Postgres+Timescale
 ```
 
 Two supported hosts:
@@ -29,9 +32,10 @@ either firmware's output.
 
 ```
 lares-sense/
-├── radar_pi/            host-side Python tools (Pi reader + UDP sender/receiver)
+├── radar_pi/            host-side Python tools (Pi reader + UDP sender/receiver/persister)
 ├── docs/
 │   ├── hardware/        sensor reference + host setup guides
+│   ├── adr/             architecture decision records
 │   └── agents/          agent-skill config (issue tracker, triage, domain)
 ├── docs_and_tools/      vendor tools + datasheets — NOT in git (see below)
 ├── fetch_vendor.sh      idempotent vendor downloader (optional)
@@ -91,6 +95,51 @@ python3 radar_pi/radar_sender.py --host <SERVER_IP> \
 The receiver logs a banner on the first fully-decoded tracking frame (point
 cloud + tracks + heights + indexes), proving the sensor → Pi → server pipe is
 green.
+
+## Persisting frames (server)
+
+`radar_pi/radar_persist.py` listens on the same UDP stream and durably stores
+every parsed frame in **PostgreSQL + TimescaleDB** (hypertable on the ingest
+timestamp), so sessions can be queried and replayed later. Frames are batched
+in memory (default 50 rows / 1 s) before each write, so a crash can lose the
+few frames still in flight; everything flushed is durable. Schema decisions:
+[`docs/adr/0002-one-row-per-frame-timescale-hypertable.md`](docs/adr/0002-one-row-per-frame-timescale-hypertable.md).
+
+```bash
+# server: needs PostgreSQL with the TimescaleDB extension + psycopg 3
+pip install "psycopg[binary]"
+python3 radar_pi/radar_persist.py \
+    --dsn postgresql://user:pass@localhost/lares --port 5005
+```
+
+Writes are batched (default 50 rows / 1 s, both tunable); the schema is created
+idempotently on start. Sample replay queries:
+
+```sql
+-- every track in the last minute
+SELECT ts, frame_num, track_data FROM frames
+WHERE ts > now() - interval '1 minute' AND track_data IS NOT NULL
+ORDER BY ts;
+
+-- 1-second point-cloud buckets over the last 5 minutes
+SELECT time_bucket('1 s', ts) AS bucket, count(*) AS frames,
+       avg(array_length(x, 1)) AS avg_points
+FROM frames WHERE ts > now() - interval '5 minutes'
+GROUP BY bucket ORDER BY bucket;
+
+-- per-point replay of one frame (parallel arrays -> rows)
+SELECT p.x, p.y, p.z, p.doppler, p.track_id
+FROM frames, unnest(x, y, z, doppler, track_indexes)
+     AS p(x, y, z, doppler, track_id)
+WHERE frame_num = 100;
+```
+
+A local throwaway database for development:
+
+```bash
+docker run -d --name lares-ts -e POSTGRES_PASSWORD=lares -e POSTGRES_DB=lares \
+    -p 5432:5432 timescale/timescaledb:latest-pg16
+```
 
 ## Vendor tools & docs (`docs_and_tools/`)
 

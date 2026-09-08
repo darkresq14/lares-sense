@@ -12,13 +12,12 @@ Runs on the server. No external dependencies. Usage:
 """
 
 import socket
-import struct
-import time
 import argparse
 import sys
 
-from tlv_parser import parse_frame, MAGIC_WORD
+from tlv_parser import parse_frame
 from frame_display import print_frame
+from frame_stream import FrameStream
 
 # ---------- constants ----------
 DEFAULT_PORT = 5005
@@ -26,8 +25,9 @@ RECV_BUFFER_SIZE = 65536
 
 
 # Frame rendering (point cloud + tracks + heights + indexes) lives in
-# frame_display.print_frame, shared with the Pi reader. parse_frame/MAGIC_WORD
-# come from tlv_parser; this file keeps the UDP socket loop.
+# frame_display.print_frame, shared with the Pi reader. parse_frame comes from
+# tlv_parser and datagram buffering from frame_stream; this file keeps the UDP
+# socket loop.
 
 
 # ---------- main ----------
@@ -46,8 +46,9 @@ def main():
     print(f"Radar UDP Receiver listening on {args.bind}:{args.port}")
     print("Waiting for frames... (Ctrl+C to stop)\n")
 
-    # Buffer for accumulating data across datagrams
-    buf = bytearray()
+    # Buffer for accumulating data across datagrams; frame carving lives in
+    # frame_stream.FrameStream, shared with the DB persister.
+    stream = FrameStream()
     frame_count = 0
     tracking_frame_count = 0
 
@@ -58,41 +59,7 @@ def main():
             except socket.timeout:
                 continue
 
-            buf.extend(data)
-
-            # Extract complete frames from buffer using magic word
-            while True:
-                # Find magic word
-                idx = buf.find(MAGIC_WORD)
-                if idx == -1:
-                    # Keep last 7 bytes in case magic word is split
-                    if len(buf) > 7:
-                        buf = buf[-7:]
-                    break
-
-                # Discard bytes before magic word
-                if idx > 0:
-                    buf = buf[idx:]
-
-                # Need at least header to get packet length
-                if len(buf) < 16:
-                    break
-
-                total_packet_len = struct.unpack('<I', buf[12:16])[0]
-
-                if total_packet_len < 40 or total_packet_len > 100000:
-                    # Invalid frame, skip this magic word
-                    buf = buf[1:]
-                    continue
-
-                # Check if we have the complete frame
-                if len(buf) < total_packet_len:
-                    break
-
-                # Extract one complete frame
-                frame_data = bytes(buf[:total_packet_len])
-                buf = buf[total_packet_len:]
-
+            for frame_data in stream.feed(data):
                 # Parse and display
                 parsed = parse_frame(frame_data)
                 if parsed is not None:
