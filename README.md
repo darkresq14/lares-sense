@@ -33,6 +33,7 @@ either firmware's output.
 ```
 lares-sense/
 ├── radar_pi/            host-side Python tools (Pi reader + UDP sender/receiver/persister)
+│   └── tests/           unit + integration tests (run from radar_pi/, see "Running tests")
 ├── docs/
 │   ├── hardware/        sensor reference + host setup guides
 │   ├── adr/             architecture decision records
@@ -96,6 +97,22 @@ The receiver logs a banner on the first fully-decoded tracking frame (point
 cloud + tracks + heights + indexes), proving the sensor → Pi → server pipe is
 green.
 
+## Server consumers: either/or
+
+Two server scripts listen on the same UDP stream — **only one of them can own
+a given port at a time** (UDP delivers each datagram to one socket; the second
+process fails to bind). `radar_sender.py` on the Pi targets a single
+`host:port`, so per port you pick one:
+
+| Script | What it does | When to use |
+|--------|--------------|-------------|
+| `radar_pi/radar_receiver.py` | Decodes frames and **prints** them to the console (point cloud, tracks, heights, indexes) | Live debugging, bring-up, proving the pipe works. Stores nothing. |
+| `radar_pi/radar_persist.py` | Decodes frames and **writes every one** to PostgreSQL + TimescaleDB for later query/replay | Normal operation — run this on the recording server. Prints only status lines. |
+
+For a live view *while* persisting, run the persister on the wire and query
+the database (see sample queries below), or run a second receiver on another
+port with a sender that multicasts to both (not currently supported).
+
 ## Persisting frames (server)
 
 `radar_pi/radar_persist.py` listens on the same UDP stream and durably stores
@@ -112,25 +129,23 @@ python3 radar_pi/radar_persist.py \
     --dsn postgresql://user:pass@localhost/lares --port 5005
 ```
 
-Configuration resolves as **CLI argument > environment variable > `.env` file > default**. A `.env` in the working directory is picked up automatically:
+Configuration resolves as **CLI argument > environment variable > `.env` file > default**. A `.env` in the working directory is picked up automatically ([`.env.example`](.env.example)
+is the documented template; the real `.env` is gitignored — keep credentials
+out of git):
 
 ```bash
-cat > .env <<'EOF'
-DATABASE_URL=postgresql://user:pass@localhost/lares
-RADAR_PORT=5005
-RADAR_BATCH_SIZE=50
-RADAR_FLUSH_INTERVAL=1.0
-EOF
+cp .env.example .env   # then edit DATABASE_URL
 python3 radar_pi/radar_persist.py   # everything from .env
 ```
 
-| Option               | Env var                 | Default    |
-|----------------------|-------------------------|------------|
-| `--dsn`              | `DATABASE_URL`          | required   |
-| `--port`             | `RADAR_PORT`            | 5005       |
-| `--bind`             | `RADAR_BIND`            | 0.0.0.0    |
-| `--batch-size`       | `RADAR_BATCH_SIZE`      | 50         |
-| `--flush-interval`   | `RADAR_FLUSH_INTERVAL`  | 1.0        |
+| Option | Env var | Default | What it controls |
+|--------|---------|---------|------------------|
+| `--dsn` | `DATABASE_URL` | *required* | PostgreSQL connection string (`postgresql://user:pass@host:5432/db`). Must be a server with the TimescaleDB extension. |
+| `--port` | `RADAR_PORT` | `5005` | UDP port to listen on. Must match the port the Pi's `radar_sender.py` sends to. |
+| `--bind` | `RADAR_BIND` | `0.0.0.0` | Local network interface the listener attaches to. `0.0.0.0` = listen on **all interfaces** (needed when frames arrive from another machine, e.g. the Pi). Use `127.0.0.1` to accept local traffic only (test setups). |
+| `--batch-size` | `RADAR_BATCH_SIZE` | `50` | Rows (frames) per INSERT transaction. Bigger = fewer round-trips, more frames lost on a crash. |
+| `--flush-interval` | `RADAR_FLUSH_INTERVAL` | `1.0` | Max seconds a received frame may sit in the write buffer before it must be written, even when the batch isn't full. |
+| `--env-file` | — | `.env` | Path to a `KEY=VALUE` config file. The implicit `.env` may be absent; an explicit `--env-file` that doesn't exist is an error. |
 
 Writes are batched (default 50 rows / 1 s, both tunable); the schema is created
 idempotently on start. Sample replay queries:
@@ -160,6 +175,28 @@ A local throwaway database for development:
 docker run -d --name lares-ts -e POSTGRES_PASSWORD=lares -e POSTGRES_DB=lares \
     -p 5432:5432 timescale/timescaledb:latest-pg16
 ```
+
+## Running tests
+
+Tests live in [`radar_pi/tests/`](radar_pi/tests) — unit tests build
+byte-exact frames in memory, no hardware needed. Run from `radar_pi/`:
+
+```bash
+python3 -m unittest discover -s tests -t .   # everything
+python3 -m unittest tests.test_tlv_parser -v  # one module
+```
+
+The integration tests (`tests/test_frame_store_integration.py`) need a real
+PostgreSQL + TimescaleDB. **The suite manages it for you**: if Docker is
+available it creates/starts/reuses the `lares-ts-test` container
+(`timescale/timescaledb:latest-pg16` on port 54329) automatically, and leaves
+it running for fast reruns. On machines without Docker the integration tests
+auto-skip — only the unit tests run.
+
+To point the integration tests at a database you already run, set
+`TEST_DATABASE_URL` — honoured **only when it points at localhost** (the
+setup drops the `frames` table, so a stray env var aimed at a remote/prod
+database is ignored).
 
 ## Vendor tools & docs (`docs_and_tools/`)
 

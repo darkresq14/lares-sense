@@ -12,21 +12,25 @@ These verify the acceptance criteria of the persistence story:
 - the UDP consumer persists frames end-to-end, and keeps buffering when the
   database connection drops.
 
-A local test database is provided by Docker:
+A local test database is **managed automatically**: if Docker is available,
+the suite starts (or reuses) the ``lares-ts-test`` container below — no
+manual step. Tests auto-skip on machines with no Docker and no reachable
+``TEST_DATABASE_URL``.
 
     docker run -d --name lares-ts-test \\
         -e POSTGRES_PASSWORD=lares -e POSTGRES_DB=lares \\
         -p 54329:5432 timescale/timescaledb:latest-pg16
 
-Tests auto-skip when neither ``TEST_DATABASE_URL`` nor the local Docker
-database is reachable, so the rest of the suite runs on machines with no
-database. The setup DROPS the ``frames`` table, so ``TEST_DATABASE_URL`` is
-only honoured when it points at localhost. Run from the radar_pi/ directory:
+The setup DROPS the ``frames`` table, so ``TEST_DATABASE_URL`` is only
+honoured when it points at localhost (a remote / production env var is
+ignored so a stray variable cannot wipe real data). The container is left
+running after the suite for faster reruns. Run from the radar_pi/ directory:
 
     python3 -m unittest tests.test_frame_store_integration -v
 """
 
 import datetime
+import functools
 import os
 import socket
 import subprocess
@@ -40,36 +44,99 @@ import psycopg
 from frame_store import FrameStore
 from tests.test_fixtures import build_tracking_frame_bytes, oob_frame, tracking_frame
 
-#: Local Docker database (see module docstring).
-LOCAL_TEST_DSN = 'postgresql://postgres:lares@localhost:54329/lares'
+#: The Docker container this module manages (started/reused automatically).
+CONTAINER_NAME = 'lares-ts-test'
+CONTAINER_IMAGE = 'timescale/timescaledb:latest-pg16'
+CONTAINER_PORT = 54329
+#: DSN of the managed container.
+LOCAL_TEST_DSN = (f'postgresql://postgres:lares@localhost:{CONTAINER_PORT}/lares')
 
 
-def _test_dsn():
-    """TEST_DATABASE_URL if it points at localhost, else the local Docker DSN.
+def _localhost_dsn_from_env():
+    """``$TEST_DATABASE_URL`` when it points at localhost, else None.
 
     The setup below is destructive (DROP TABLE frames); a remote / production
-    $TEST_DATABASE_URL is ignored so a stray env var cannot wipe real data.
+    ``$TEST_DATABASE_URL`` is ignored so a stray env var cannot wipe real
+    data.
     """
     env = os.environ.get('TEST_DATABASE_URL')
     if env:
         host = urlparse(env).hostname or 'localhost'
         if host in ('localhost', '127.0.0.1', '::1'):
             return env
+    return None
+
+
+def _docker(args, timeout=120):
+    """Run a docker CLI command; returns CompletedProcess or None on failure."""
+    try:
+        return subprocess.run(['docker', *args], capture_output=True,
+                              timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _wait_container_ready(deadline_s=120):
+    for _ in range(int(deadline_s / 2)):
+        r = _docker(['exec', CONTAINER_NAME, 'pg_isready', '-U', 'postgres'],
+                    timeout=15)
+        if r is not None and r.returncode == 0:
+            return True
+        time.sleep(2)
+    return False
+
+
+@functools.lru_cache(maxsize=1)
+def _ensure_test_database():
+    """Return the DSN to test against, or None when no database is possible.
+
+    Order: an explicitly provided localhost ``$TEST_DATABASE_URL`` wins
+    (assumed already running); otherwise the managed Docker container is
+    started (created if missing, started if stopped, reused if running).
+    """
+    env_dsn = _localhost_dsn_from_env()
+    if env_dsn is not None:
+        return env_dsn
+
+    probe = _docker(['info'], timeout=15)
+    if probe is None or probe.returncode != 0:
+        return None  # no Docker daemon -> caller skips
+
+    status = _docker(['inspect', '-f', '{{.State.Status}}', CONTAINER_NAME],
+                     timeout=15)
+    if status is None:
+        return None
+    if status.returncode != 0:
+        created = _docker(
+            ['run', '-d', '--name', CONTAINER_NAME,
+             '-e', 'POSTGRES_PASSWORD=lares', '-e', 'POSTGRES_DB=lares',
+             '-p', f'{CONTAINER_PORT}:5432', CONTAINER_IMAGE],
+            timeout=300)  # first pull can be slow
+        if created is None or created.returncode != 0:
+            return None
+    elif 'running' not in status.stdout.decode(errors='replace'):
+        started = _docker(['start', CONTAINER_NAME])
+        if started is None or started.returncode != 0:
+            return None
+
+    if not _wait_container_ready():
+        return None
     return LOCAL_TEST_DSN
 
 
-TEST_DSN = _test_dsn()
+TEST_DSN = _ensure_test_database()
 
 
 def _connect_or_none():
+    if TEST_DSN is None:
+        return None
     try:
-        conn = psycopg.connect(TEST_DSN, connect_timeout=3)
-        return conn
+        return psycopg.connect(TEST_DSN, connect_timeout=3)
     except psycopg.OperationalError:
         return None
 
 
-@unittest.skipUnless(_connect_or_none(), 'no test database reachable')
+@unittest.skipUnless(TEST_DSN, 'no test database available (no Docker daemon, no localhost TEST_DATABASE_URL)')
 class FrameStoreIntegrationTests(unittest.TestCase):
 
     @classmethod
@@ -204,7 +271,7 @@ class FrameStoreIntegrationTests(unittest.TestCase):
         self.assertEqual(count, 2)
 
 
-@unittest.skipUnless(_connect_or_none(), 'no test database reachable')
+@unittest.skipUnless(TEST_DSN, 'no test database available (no Docker daemon, no localhost TEST_DATABASE_URL)')
 class RadarPersistEndToEndTests(unittest.TestCase):
     """Feed the real UDP consumer, read rows back from Postgres."""
 
@@ -317,6 +384,8 @@ class RadarPersistEndToEndTests(unittest.TestCase):
             self.assertEqual(r[2], '7')  # track id as JSONB text
             self.assertEqual(r[3], 1)    # one track
 
+    @unittest.skipIf(_localhost_dsn_from_env(),
+                     'DB-outage test needs the managed Docker container')
     def test_consumer_survives_database_outage(self):
         """Frames keep buffering while the DB is down, land after restart."""
         self._bootstrap_and_truncate()
@@ -327,7 +396,7 @@ class RadarPersistEndToEndTests(unittest.TestCase):
             time.sleep(0.5)
 
             # Kill the database from under the consumer.
-            subprocess.run(['docker', 'stop', 'lares-ts-test'],
+            subprocess.run(['docker', 'stop', CONTAINER_NAME],
                            capture_output=True)
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
                 s.sendto(build_tracking_frame_bytes(200),
@@ -337,7 +406,7 @@ class RadarPersistEndToEndTests(unittest.TestCase):
             self.assertIsNone(proc.poll(),
                               'consumer crashed during DB outage')
 
-            subprocess.run(['docker', 'start', 'lares-ts-test'],
+            subprocess.run(['docker', 'start', CONTAINER_NAME],
                            capture_output=True)
             self._wait_for_db_up()
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
