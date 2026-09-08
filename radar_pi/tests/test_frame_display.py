@@ -10,7 +10,7 @@ without a sensor.
 
 Run from the radar_pi/ directory:
 
-    python3 -m unittest test_frame_display -v
+    python3 -m unittest tests.test_frame_display -v
 """
 
 import io

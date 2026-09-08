@@ -10,7 +10,7 @@ socket and shared by every UDP consumer.
 Frames are built byte-exact with the helper from test_tlv_parser. Run from the
 radar_pi/ directory:
 
-    python3 -m unittest test_frame_stream -v
+    python3 -m unittest tests.test_frame_stream -v
 """
 
 import struct
@@ -18,7 +18,7 @@ import unittest
 
 from frame_stream import FrameStream
 from tlv_parser import MAGIC_WORD, HEADER_LEN
-from test_tlv_parser import build_frame
+from tests.test_tlv_parser import build_frame
 
 
 def _one_frame(frame_num=7):

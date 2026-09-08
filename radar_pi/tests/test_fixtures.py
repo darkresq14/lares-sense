@@ -17,7 +17,7 @@ from tlv_parser import (
 )
 
 try:
-    from test_tlv_parser import build_frame
+    from tests.test_tlv_parser import build_frame
 except ImportError:  # pragma: no cover - only when run outside radar_pi/
     build_frame = None
 

@@ -8,9 +8,9 @@ TLV items) per docs/hardware/sensor-reference.md "UART Data Protocol", feed them
 to parse_frame, and assert the decode. This covers both the Out-of-Box Demo
 TLVs (types 1, 2, 7) and the 3D People Tracking TLVs (1020, 1010, 1011, 1012).
 
-Run from the radar_pi/ directory (matches the scripts' flat-import convention):
+Run from the radar_pi/ directory (tests live in tests/, scripts stay flat):
 
-    python3 -m unittest test_tlv_parser -v
+    python3 -m unittest tests.test_tlv_parser -v
 """
 
 import math

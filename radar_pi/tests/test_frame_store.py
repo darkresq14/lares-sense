@@ -12,7 +12,7 @@ Integration tests against a real Postgres+TimescaleDB live in
 
 Run from the radar_pi/ directory:
 
-    python3 -m unittest test_frame_store -v
+    python3 -m unittest tests.test_frame_store -v
 """
 
 import datetime
@@ -20,7 +20,7 @@ import json
 import unittest
 
 from frame_store import frame_to_row
-from test_fixtures import oob_frame, tracking_frame
+from tests.test_fixtures import oob_frame, tracking_frame
 
 
 TS = datetime.datetime(2025, 8, 14, 12, 0, 0,

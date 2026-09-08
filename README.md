@@ -112,6 +112,26 @@ python3 radar_pi/radar_persist.py \
     --dsn postgresql://user:pass@localhost/lares --port 5005
 ```
 
+Configuration resolves as **CLI argument > environment variable > `.env` file > default**. A `.env` in the working directory is picked up automatically:
+
+```bash
+cat > .env <<'EOF'
+DATABASE_URL=postgresql://user:pass@localhost/lares
+RADAR_PORT=5005
+RADAR_BATCH_SIZE=50
+RADAR_FLUSH_INTERVAL=1.0
+EOF
+python3 radar_pi/radar_persist.py   # everything from .env
+```
+
+| Option               | Env var                 | Default    |
+|----------------------|-------------------------|------------|
+| `--dsn`              | `DATABASE_URL`          | required   |
+| `--port`             | `RADAR_PORT`            | 5005       |
+| `--bind`             | `RADAR_BIND`            | 0.0.0.0    |
+| `--batch-size`       | `RADAR_BATCH_SIZE`      | 50         |
+| `--flush-interval`   | `RADAR_FLUSH_INTERVAL`  | 1.0        |
+
 Writes are batched (default 50 rows / 1 s, both tunable); the schema is created
 idempotently on start. Sample replay queries:
 

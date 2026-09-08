@@ -23,7 +23,7 @@ database is reachable, so the rest of the suite runs on machines with no
 database. The setup DROPS the ``frames`` table, so ``TEST_DATABASE_URL`` is
 only honoured when it points at localhost. Run from the radar_pi/ directory:
 
-    python3 -m unittest test_frame_store_integration -v
+    python3 -m unittest tests.test_frame_store_integration -v
 """
 
 import datetime
@@ -38,7 +38,7 @@ from urllib.parse import urlparse
 import psycopg
 
 from frame_store import FrameStore
-from test_fixtures import build_tracking_frame_bytes, oob_frame, tracking_frame
+from tests.test_fixtures import build_tracking_frame_bytes, oob_frame, tracking_frame
 
 #: Local Docker database (see module docstring).
 LOCAL_TEST_DSN = 'postgresql://postgres:lares@localhost:54329/lares'
@@ -220,11 +220,13 @@ class RadarPersistEndToEndTests(unittest.TestCase):
         cls.conn.close()
 
     def _start_consumer(self, port):
+        here = os.path.dirname(os.path.abspath(__file__))          # tests/
+        radar_pi = os.path.dirname(here)                           # radar_pi/
         return subprocess.Popen(
-            [sys.executable, 'radar_persist.py',
+            [sys.executable, os.path.join(radar_pi, 'radar_persist.py'),
              '--port', str(port), '--dsn', TEST_DSN,
              '--batch-size', '5', '--flush-interval', '0.5'],
-            cwd=os.path.dirname(os.path.abspath(__file__)),
+            cwd=radar_pi,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
     def _wait_for_listener(self, port):
