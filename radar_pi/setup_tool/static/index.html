@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lares Setup Tool — live point cloud</title>
+<style>
+  /* Instrument-panel HUD: near-black field, mono telemetry, amber accent.
+     No external fonts — the Pi may serve an offline LAN. */
+  :root {
+    --bg: #0b0e11;
+    --ink: #c9d1d9;
+    --dim: #5c6672;
+    --accent: #ffb454;
+    --ok: #7ee081;
+    --err: #ff6b6b;
+    --panel: rgba(13, 17, 21, 0.85);
+    --line: #1d242b;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--ink);
+    font: 13px/1.5 ui-monospace, "Cascadia Mono", "JetBrains Mono", Menlo,
+          Consolas, monospace;
+  }
+  #view { position: fixed; inset: 0; display: block; cursor: grab; }
+  #view:active { cursor: grabbing; }
+
+  .hud {
+    position: fixed;
+    top: 16px;
+    left: 16px;
+    padding: 10px 14px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 2px solid var(--accent);
+    user-select: none;
+  }
+  .hud .title {
+    color: var(--accent);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-size: 11px;
+  }
+  .hud .subtitle { color: var(--dim); font-size: 11px; margin-top: 2px; }
+
+  .stats {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    padding: 10px 14px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    user-select: none;
+  }
+  .stats .frame { color: var(--ink); }
+  .stats .meta { color: var(--dim); font-size: 11px; margin-top: 2px; }
+
+  #status {
+    position: fixed;
+    bottom: 16px;
+    left: 16px;
+    padding: 6px 12px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    user-select: none;
+  }
+  #status::before {
+    content: "";
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 8px;
+    border-radius: 50%;
+    background: var(--dim);
+  }
+  #status.ok::before { background: var(--ok); }
+  #status.err::before { background: var(--err); }
+  #status.connecting::before {
+    background: var(--accent);
+    animation: pulse 1s ease-in-out infinite;
+  }
+  @keyframes pulse { 50% { opacity: 0.25; } }
+
+  .hint {
+    position: fixed;
+    bottom: 16px;
+    right: 16px;
+    color: var(--dim);
+    font-size: 11px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    padding: 6px 12px;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+
+<div class="hud">
+  <div class="title">Lares Setup Tool</div>
+  <div class="subtitle">skeleton · live point cloud</div>
+</div>
+
+<div class="stats">
+  <div class="frame" id="stat-frame">—</div>
+  <div class="meta" id="stat-meta">waiting for frames</div>
+</div>
+
+<div id="status" class="connecting">connecting…</div>
+<div class="hint">drag · orbit &nbsp;&nbsp; wheel · zoom</div>
+
+<script src="vendor/three.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -33,6 +33,7 @@ either firmware's output.
 ```
 lares-sense/
 ├── radar_pi/            host-side Python tools (Pi reader + UDP sender/receiver/persister)
+│   ├── setup_tool/      Pi-served Setup Tool (live point-cloud page + WS host)
 │   └── tests/           unit + integration tests (run from radar_pi/, see "Running tests")
 ├── docs/
 │   ├── hardware/        sensor reference + host setup guides
@@ -96,6 +97,29 @@ python3 radar_pi/radar_sender.py --host <SERVER_IP> \
 The receiver logs a banner on the first fully-decoded tracking frame (point
 cloud + tracks + heights + indexes), proving the sensor → Pi → server pipe is
 green.
+
+## Setup Tool (Pi-served live view)
+
+[`radar_pi/setup_tool/`](radar_pi/setup_tool/) is the skeleton of the
+**Setup Tool** ([ADR-0004](docs/adr/0004-pi-served-staged-setup-tool.md)):
+one Pi process owns the UART, serves the web page over HTTP, and streams every
+parsed frame over a WebSocket **on the same port**. The page auto-connects
+and renders the live point cloud with three.js (`THREE.Points`, preallocated
+buffers). Config editing, stages and overlays arrive in later tickets.
+
+On the Pi (sensor already streaming — configure it once with `read_radar.py`):
+
+```bash
+~/radar_env/bin/pip install pyserial "websockets>=13"
+cd radar_pi
+~/radar_env/bin/python3 -m setup_tool --serial-port /dev/serial0 --port 8000
+```
+
+Then open `http://<pi-ip>:8000/` from any browser on the LAN and watch points
+move. The WS messages are `{"type": "frame", "frame": {...}}` where
+`frame` is exactly what `tlv_parser.parse_frame` returns — the same shape the
+persist path consumes. Slow browsers can't stall the reader: per-client
+queues are bounded with drop-oldest overflow.
 
 ## Server consumers: either/or
 
