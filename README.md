@@ -100,12 +100,24 @@ green.
 
 ## Setup Tool (Pi-served live view)
 
-[`radar_pi/setup_tool/`](radar_pi/setup_tool/) is the skeleton of the
-**Setup Tool** ([ADR-0004](docs/adr/0004-pi-served-staged-setup-tool.md)):
-one Pi process owns the UART, serves the web page over HTTP, and streams every
-parsed frame over a WebSocket **on the same port**. The page auto-connects
-and renders the live point cloud with three.js (`THREE.Points`, preallocated
-buffers). Config editing, stages and overlays arrive in later tickets.
+[`radar_pi/setup_tool/`](radar_pi/setup_tool/) is the **Setup Tool**
+([ADR-0004](docs/adr/0004-pi-served-staged-setup-tool.md)): one Pi process
+owns the UART, serves the web page over HTTP, and streams every parsed frame
+over a WebSocket **on the same port**. The page auto-connects and renders the
+live point cloud with three.js (`THREE.Points`, preallocated buffers), and —
+since issue #10 — carries a **tiered config editor**: every parameter of the
+6 m people-tracking cfg is editable, grouped into *Room & mounting*,
+*Tracking* and *RF & chirp (expert)* tiers, with info text and documented
+ranges per field (sourced from the TI SDK user's guide and the people-tracking
+tuning guides). Stages, apply-to-sensor and overlays arrive in later tickets.
+
+**Working Config persistence**: saving validates locally (out-of-range or
+wrong-type values are rejected inline — nothing reaches the serial device) and
+writes the full generated cfg to a Pi-local data dir
+(`~/.local/share/lares/setup_tool/working_config.cfg`; override with
+`--data-dir` or `$SETUP_TOOL_DATA_DIR`). First run seeds it from the pristine
+vendor template (`radar_pi/xwr6843_aop_3d_people_track_6m.cfg`); the repo
+never stores the working copy.
 
 On the Pi (sensor already streaming — configure it once with `read_radar.py`):
 
@@ -119,7 +131,9 @@ Then open `http://<pi-ip>:8000/` from any browser on the LAN and watch points
 move. The WS messages are `{"type": "frame", "frame": {...}}` where
 `frame` is exactly what `tlv_parser.parse_frame` returns — the same shape the
 persist path consumes. Slow browsers can't stall the reader: per-client
-queues are bounded with drop-oldest overflow.
+queues are bounded with drop-oldest overflow. The same stream carries the
+config protocol (`config_get` / `config_set` → `config` / `config_saved` /
+`config_rejected`).
 
 ## Server consumers: either/or
 

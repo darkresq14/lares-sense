@@ -24,6 +24,7 @@ var RAMP_HIGH = [255, 180, 84];
 
 var scene, camera, renderer, geometry, pointsMaterial;
 var statusEl, statFrameEl, statMetaEl;
+var wsInstance = null;
 
 var framesSeen = 0;
 var fpsCounter = 0;
@@ -152,8 +153,10 @@ function connect() {
     scheduleReconnect();
     return;
   }
+  wsInstance = ws;
   ws.onopen = function () {
     setStatus('ok', 'stream live');
+    ws.send(JSON.stringify({ type: 'config_get' }));
   };
   ws.onmessage = function (event) {
     var message;
@@ -162,7 +165,11 @@ function connect() {
     } catch (err) {
       return;
     }
-    if (message && message.type === 'frame') onFrame(message.frame);
+    if (!message || !message.type) return;
+    if (message.type === 'frame') onFrame(message.frame);
+    else if (message.type === 'config') onConfig(message);
+    else if (message.type === 'config_saved') onConfigSaved(message);
+    else if (message.type === 'config_rejected') onConfigRejected(message);
   };
   ws.onclose = function () {
     setStatus('err', 'disconnected — retrying');
@@ -221,6 +228,198 @@ function setStatus(cls, text) {
   statusEl.textContent = text;
 }
 
+// --- tiered config editor (issue #10) ----------------------------------
+
+var editorBody, saveButton, configStatus;
+var configSchema = null;   // {tiers: [...], params: [...]} from the host
+var configValues = null;   // current values backing the inputs
+
+function onConfig(message) {
+  configSchema = message.schema;
+  configValues = message.values;
+  renderEditor();
+  setConfigStatus('', 'loaded');
+  saveButton.disabled = false;
+}
+
+function onConfigSaved(message) {
+  configValues = message.values;
+  clearFieldErrors();
+  setConfigStatus('ok', 'saved ✓');
+  saveButton.disabled = false;
+}
+
+function onConfigRejected(message) {
+  clearFieldErrors();
+  var byInput = {};
+  var errors = message.errors || [];
+  for (var i = 0; i < errors.length; i++) {
+    var e = errors[i];
+    var input = document.getElementById(fieldId(e.command, e.instance, e.field));
+    if (!input) continue;
+    input.classList.add('invalid');
+    byInput[input.id] = (byInput[input.id] || []).concat(e.message);
+  }
+  for (var id in byInput) {
+    var cell = document.getElementById(id).parentNode;
+    var errEl = document.createElement('div');
+    errEl.className = 'field-err';
+    errEl.textContent = byInput[id].join(' · ');
+    cell.parentNode.insertBefore(errEl, cell.nextSibling);
+  }
+  setConfigStatus('err', errors.length + ' invalid value' +
+                  (errors.length === 1 ? '' : 's') + ' — not saved');
+  saveButton.disabled = false;
+}
+
+function clearFieldErrors() {
+  var nodes = editorBody.querySelectorAll('.field-err');
+  for (var i = 0; i < nodes.length; i++) nodes[i].parentNode.removeChild(nodes[i]);
+  var inputs = editorBody.querySelectorAll('input.invalid');
+  for (var j = 0; j < inputs.length; j++) inputs[j].classList.remove('invalid');
+}
+
+function fieldId(command, instance, key) {
+  return 'f-' + command + '-' + instance + '-' + key;
+}
+
+function setConfigStatus(cls, text) {
+  configStatus.className = cls;
+  configStatus.textContent = text;
+}
+
+function renderEditor() {
+  editorBody.innerHTML = '';
+  var tiers = configSchema.tiers;
+  for (var t = 0; t < tiers.length; t++) {
+    var tier = tiers[t];
+    var section = document.createElement('section');
+    section.className = 'tier';
+    var h = document.createElement('h2');
+    h.textContent = tier.label;
+    section.appendChild(h);
+
+    var blurb = document.createElement('p');
+    blurb.className = 'blurb';
+    blurb.textContent = tier.blurb;
+    section.appendChild(blurb);
+
+    for (var i = 0; i < configSchema.params.length; i++) {
+      var param = configSchema.params[i];
+      if (param.tier !== tier.id) continue;
+      section.appendChild(renderParam(param));
+    }
+    editorBody.appendChild(section);
+  }
+}
+
+function renderParam(param) {
+  var block = document.createElement('div');
+  block.className = 'param';
+
+  var name = document.createElement('div');
+  name.className = 'name';
+  name.textContent = param.title;
+  block.appendChild(name);
+
+  var cmd = document.createElement('div');
+  cmd.className = 'cmd';
+  cmd.textContent = param.command + (param.instances > 1
+                                     ? ' ×' + param.instances : '');
+  block.appendChild(cmd);
+
+  var info = document.createElement('div');
+  info.className = 'info';
+  info.textContent = param.info;
+  block.appendChild(info);
+
+  // Wide (compact) layout when there are too many fields for labeled rows.
+  var wide = param.fields.length > 8;
+
+  for (var instance = 0; instance < param.instances; instance++) {
+    if (param.instances > 1) {
+      var label = document.createElement('div');
+      label.className = 'instance-label';
+      label.textContent = (param.instance_label || 'instance') + ' ' + instance;
+      block.appendChild(label);
+    }
+
+    var fields = document.createElement('div');
+    fields.className = 'fields' + (wide ? ' wide' : '');
+    for (var f = 0; f < param.fields.length; f++) {
+      fields.appendChild(renderField(param, param.fields[f], instance, f, wide));
+    }
+    block.appendChild(fields);
+  }
+  return block;
+}
+
+function renderField(param, field, instance, index, wide) {
+  var value = configValues[param.command][instance][index];
+
+  var input = document.createElement('input');
+  input.type = 'text';
+  input.value = String(value);
+  input.id = fieldId(param.command, instance, field.key);
+  input.dataset.command = param.command;
+  input.dataset.instance = String(instance);
+  input.dataset.key = field.key;
+  var tip = field.label +
+    (field.min !== null ? ' · range [' + field.min + ', ' + field.max + ']' : '') +
+    (field.unit ? ' ' + field.unit : '') +
+    (field.info ? '\n' + field.info : '');
+  input.title = tip;
+
+  if (wide) {
+    // compact grid: input only, tooltip carries the label
+    var cell = document.createElement('div');
+    cell.className = 'field-cell';
+    cell.appendChild(input);
+    return cell;
+  }
+
+  var label = document.createElement('label');
+  label.htmlFor = input.id;
+  label.textContent = field.label;
+
+  var cell = document.createElement('div');
+  cell.className = 'field-cell';
+  cell.appendChild(input);
+  if (field.unit) {
+    var unit = document.createElement('span');
+    unit.className = 'unit';
+    unit.textContent = field.unit;
+    cell.appendChild(unit);
+  }
+
+  var frag = document.createDocumentFragment();
+  frag.appendChild(label);
+  frag.appendChild(cell);
+  return frag;
+}
+
+function collectValues() {
+  var values = {};
+  for (var command in configValues) values[command] = [];
+  var inputs = editorBody.querySelectorAll('input');
+  for (var i = 0; i < inputs.length; i++) {
+    var input = inputs[i];
+    var c = input.dataset.command;
+    var n = parseInt(input.dataset.instance, 10);
+    while (values[c].length <= n) values[c].push([]);
+    values[c][n].push(input.value);
+  }
+  return values;
+}
+
+function saveConfig() {
+  if (!wsInstance || wsInstance.readyState !== 1) return;
+  clearFieldErrors();
+  setConfigStatus('', 'saving…');
+  saveButton.disabled = true;   // re-enabled by the saved/rejected reply
+  wsInstance.send(JSON.stringify({ type: 'config_set', values: collectValues() }));
+}
+
 // --- main loop ---------------------------------------------------------
 
 function animate(now) {
@@ -243,6 +442,15 @@ function animate(now) {
   statusEl = document.getElementById('status');
   statFrameEl = document.getElementById('stat-frame');
   statMetaEl = document.getElementById('stat-meta');
+  editorBody = document.getElementById('editor-body');
+  saveButton = document.getElementById('save');
+  configStatus = document.getElementById('config-status');
+
+  document.body.classList.add('editor-open');
+  document.getElementById('editor-toggle').addEventListener('click', function () {
+    document.body.classList.toggle('editor-open');
+  });
+  saveButton.addEventListener('click', saveConfig);
 
   initScene();
   connect();

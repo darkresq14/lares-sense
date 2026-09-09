@@ -39,7 +39,9 @@ PARSER_KEYS = {
 class FakeSerialDevice:
     """In-memory stand-in for the pyserial port the host reads frames from.
 
-    Bytes appended with :meth:`feed` come back from :meth:`read` in order.
+    Bytes appended with :meth:`feed` come back from :meth:`read` in order;
+    everything handed to :meth:`write` accumulates in :attr:`written` so seam
+    tests can assert exactly which bytes ever left for the device.
     ``read`` blocks while the buffer is empty (a serial port waiting for data)
     and raises once the device is closed — which is how the reader loop learns
     to stop, mirroring a closed pyserial port.
@@ -49,6 +51,11 @@ class FakeSerialDevice:
         self._buf = bytearray()
         self._cond = threading.Condition()
         self._closed = False
+        self.written = bytearray()
+
+    def write(self, data):
+        """Record bytes the host tries to send to the device."""
+        self.written.extend(data)
 
     def feed(self, data):
         with self._cond:
