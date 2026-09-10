@@ -61,7 +61,7 @@ class SetupToolConfigTests(unittest.TestCase):
 
     def start_host(self):
         host = SetupToolHost(self.device, bind='127.0.0.1', port=0,
-                             config_dir=self.data_dir)
+                             config_dir=self.data_dir, auto_start=False)
         host.start()
         self.addCleanup(host.stop)
         return host
@@ -71,14 +71,15 @@ class SetupToolConfigTests(unittest.TestCase):
     def request(self, message):
         """Send one config request over WS; return the matching reply.
 
-        Frames broadcast while we wait are skipped — we only care about the
-        config protocol messages.
+        Frames broadcast while we wait are skipped, as are stage
+        snapshots/events (issue #12) — we only care about the config
+        protocol messages.
         """
         with connect(f'ws://127.0.0.1:{self.port}/', open_timeout=5) as ws:
             ws.send(json.dumps(message))
             for _ in range(50):
                 reply = json.loads(ws.recv(timeout=5))
-                if reply['type'] != 'frame':
+                if reply['type'] not in ('frame', 'stage'):
                     return reply
         self.fail('no config reply arrived')
 
@@ -150,7 +151,12 @@ class SetupToolConfigTests(unittest.TestCase):
         host2 = self.start_host()
         with connect(f'ws://127.0.0.1:{host2.actual_port}/', open_timeout=5) as ws:
             ws.send(json.dumps({'type': 'config_get'}))
-            reply = json.loads(ws.recv(timeout=5))
+            reply = None
+            for _ in range(50):
+                message = json.loads(ws.recv(timeout=5))
+                if message['type'] not in ('frame', 'stage'):
+                    reply = message
+                    break
         self.assertEqual(reply['values']['boundaryBox'], [[-6, 6, 0, 10, 0, 4]])
 
         # And it did *not* re-seed over the saved file.
@@ -223,7 +229,12 @@ class SetupToolConfigTests(unittest.TestCase):
         with connect(f'ws://127.0.0.1:{host2.actual_port}/',
                      open_timeout=5) as ws:
             ws.send(json.dumps({'type': 'config_get'}))
-            reply = json.loads(ws.recv(timeout=5))
+            reply = None
+            for _ in range(50):
+                message = json.loads(ws.recv(timeout=5))
+                if message['type'] not in ('frame', 'stage'):
+                    reply = message
+                    break
 
         # The tool serves the re-seeded template defaults instead of dying.
         self.assertEqual(reply['values']['sensorPosition'], [[2, 0, 15]])

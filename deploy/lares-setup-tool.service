@@ -1,0 +1,58 @@
+# Lares Setup Tool — systemd unit (issue #12).
+#
+# Install (see docs/hardware/setup-tool-install.md for the full walk-through):
+#
+#   sudo cp deploy/lares-setup-tool.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now lares-setup-tool
+#
+# The unit assumes:
+#   - the repo lives at /opt/lares-sense (adjust WorkingDirectory if not)
+#   - a venv with pyserial + websockets at /opt/lares-sense/.venv
+#   - the sensor on /dev/serial0, serial console DISABLED
+#     (raspi-config -> Interface Options -> Serial Port:
+#      login shell NO, serial hardware YES)
+#   - LARES_UDP_HOST (and optionally LARES_UDP_PORT) in
+#     /etc/default/lares-setup-tool — the recording server the Running
+#     Stage forwards raw frames to. Without it the tool still runs, but
+#     nothing is recorded.
+
+[Unit]
+Description=Lares Setup Tool — radar reader, web UI, UDP forwarder
+Documentation=file:///opt/lares-sense/docs/hardware/setup-tool-install.md
+Wants=network-online.target
+After=network-online.target
+# Do not even try when the UART is not there (sensor box unplugged).
+ConditionPathExists=/dev/serial0
+
+[Service]
+Type=simple
+User=pi
+SupplementaryGroups=dialout
+WorkingDirectory=/opt/lares-sense/radar_pi
+ExecStart=/opt/lares-sense/.venv/bin/python3 -m setup_tool.host \
+    --serial-port /dev/serial0 \
+    --port 8000
+# Recording server for the Running Stage UDP fan-out (host[, port]).
+# Optional file: '-' keeps the unit startable before it exists.
+EnvironmentFile=-/etc/default/lares-setup-tool
+# Persisted Working Config + boot self-recovery state lives here.
+Environment=SETUP_TOOL_DATA_DIR=/var/lib/lares/setup_tool
+StateDirectory=lares/setup_tool
+# A power blip or a crash must bring the site back up on its own.
+Restart=on-failure
+RestartSec=5
+# Serial reads block; give the process time to park cleanly on stop.
+TimeoutStopSec=15
+KillSignal=SIGINT
+
+# Hardening: the tool needs the UART, its data dir, and the LAN.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/lares/setup_tool
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

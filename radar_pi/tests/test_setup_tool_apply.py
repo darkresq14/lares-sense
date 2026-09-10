@@ -39,11 +39,16 @@ HOST_FAST_TIMEOUT = 0.8
 
 
 def recv_non_frame(ws, timeout=5):
-    """Next WS message that is not a frame broadcast."""
+    """Next WS message that is not a frame broadcast or a stage event.
+
+    Stage snapshots/events (issue #12) ride the same stream and must not
+    be mistaken for the reply a config request is waiting for.
+    """
     while True:
         message = json.loads(ws.recv(timeout=timeout))
-        if message.get('type') != 'frame':
-            return message
+        if message.get('type') in ('frame', 'stage'):
+            continue
+        return message
 
 
 def collect_apply_progress(ws, timeout=5, on_state=None):
@@ -97,9 +102,13 @@ class SetupToolApplyTests(unittest.TestCase):
             build_tracking_frame_bytes(n, tid=7, n_points=3)
             for n in frame_nums))
         for n in frame_nums:
-            message = json.loads(ws.recv(timeout=5))
-            self.assertEqual(message['type'], 'frame')
-            self.assertEqual(message['frame']['frame_num'], n)
+            while True:
+                message = json.loads(ws.recv(timeout=5))
+                if message.get('type') == 'stage':
+                    continue   # health events ride the same stream
+                self.assertEqual(message['type'], 'frame')
+                self.assertEqual(message['frame']['frame_num'], n)
+                break
 
     def cfg_command_lines(self, text):
         """The command lines of a cfg text — what the sensor consumes."""

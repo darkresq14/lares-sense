@@ -48,6 +48,53 @@
   }
   .hud .subtitle { color: var(--dim); font-size: 11px; margin-top: 2px; }
 
+  /* ---- stage machine (issue #12) ---- */
+  .hud .stage-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  #stage-line {
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--dim);
+    white-space: nowrap;
+  }
+  #stage-line.running { color: var(--ok); }
+  #stage-line.busy { color: var(--accent); }
+  #stage-line.err { color: var(--err); }
+  .hud .stage-row button {
+    font: inherit;
+    font-size: 11px;
+    padding: 3px 12px;
+    cursor: pointer;
+  }
+  #start {
+    color: #0b0e11;
+    background: var(--ok);
+    border: 0;
+  }
+  #start:hover { filter: brightness(1.1); }
+  #stop {
+    color: var(--ink);
+    background: transparent;
+    border: 1px solid var(--line);
+  }
+  #stop:hover { border-color: var(--err); color: var(--err); }
+  .hud .stage-row button:disabled { opacity: 0.35; cursor: default; }
+  #health-line {
+    color: var(--dim);
+    font-size: 11px;
+    margin-top: 4px;
+    white-space: nowrap;
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #health-line.err { color: var(--err); }
+
   .stats {
     position: fixed;
     top: 16px;
@@ -159,6 +206,16 @@
   #apply-status.ok { color: var(--ok); }
   #apply-status.err { color: var(--err); }
   #apply-status.busy { color: var(--accent); }
+  #lock-banner {
+    display: none;
+    margin-top: 10px;
+    padding: 6px 10px;
+    border: 1px dashed var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+  }
+  body.stage-running #lock-banner { display: block; }
+  body.stage-running .fields input { opacity: 0.5; }
   #editor-toggle {
     position: fixed;
     top: 16px;
@@ -228,7 +285,20 @@
 
 <div class="hud">
   <div class="title">Lares Setup Tool</div>
-  <div class="subtitle">skeleton · live point cloud</div>
+  <div class="subtitle">live point cloud · staged</div>
+  <div class="stage-row">
+    <span id="stage-line">config stage</span>
+    <button id="start" type="button" disabled
+      title="Start applies the Working Config and enters Running Stage: the
+sensor streams, frames go to the browsers AND the recording server, and the
+config becomes read-only."
+    >Start</button>
+    <button id="stop" type="button" disabled
+      title="Stop returns to Config Stage: UDP to the server is suppressed,
+the sensor is stopped, and the editor unlocks."
+    >Stop</button>
+  </div>
+  <div id="health-line">sensor stopped</div>
 </div>
 
 <div class="stats">
@@ -255,6 +325,7 @@ config channel is blind (no ACKs) — success is frames resuming on the view."
     <div class="actions">
       <span id="apply-status">sensor untouched — Apply to reconfigure</span>
     </div>
+    <div id="lock-banner">Running — config locked. Stop to edit.</div>
   </header>
   <div class="body" id="editor-body"></div>
 </aside>

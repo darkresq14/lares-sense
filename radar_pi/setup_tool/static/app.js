@@ -1,6 +1,6 @@
 'use strict';
 /*
- * Lares Setup Tool — skeleton live point cloud (issue #9).
+ * Lares Setup Tool — staged live view + config editor (issues #9–#12).
  *
  * Auto-connects to the frame WebSocket served on the same host:port as this
  * page and renders the stream with THREE.Points using preallocated typed
@@ -24,7 +24,15 @@ var RAMP_HIGH = [255, 180, 84];
 
 var scene, camera, renderer, geometry, pointsMaterial;
 var statusEl, statFrameEl, statMetaEl;
+var stageLine, healthLine, startButton, stopButton;
 var wsInstance = null;
+
+// Stage machine state (issue #12): 'config' | 'running', plus sensor
+// health 'stopped' | 'reconfiguring' | 'streaming' | 'error'. The host
+// snapshots both on connect and broadcasts every change.
+var currentStage = 'config';
+var currentHealth = 'stopped';
+var stageReason = null;
 
 var framesSeen = 0;
 var fpsCounter = 0;
@@ -97,8 +105,8 @@ function onResize() {
   renderer.setSize(window.innerWidth, window.innerHeight);
 }
 
-// Minimal pointer orbit (drag = rotate, wheel = zoom); enough for a skeleton
-// without vendoring OrbitControls.
+// Minimal pointer orbit (drag = rotate, wheel = zoom); enough for the
+// setup view without vendoring OrbitControls.
 function initOrbit(canvas) {
   var dragging = false;
   var lastX = 0, lastY = 0;
@@ -171,6 +179,7 @@ function connect() {
     else if (message.type === 'config_saved') onConfigSaved(message);
     else if (message.type === 'config_rejected') onConfigRejected(message);
     else if (message.type === 'apply_progress') onApplyProgress(message);
+    else if (message.type === 'stage') onStage(message);
   };
   ws.onclose = function () {
     setStatus('err', 'disconnected — retrying');
@@ -229,6 +238,65 @@ function setStatus(cls, text) {
   statusEl.textContent = text;
 }
 
+// --- two-stage machine (issue #12) -------------------------------------
+
+var HEALTH_TEXT = {
+  stopped: 'sensor stopped',
+  streaming: 'sensor streaming',
+  reconfiguring: 'reconfiguring…',
+  error: 'error'
+};
+
+function onStage(message) {
+  currentStage = message.stage || currentStage;
+  currentHealth = message.health || currentHealth;
+  stageReason = message.reason || null;
+  updateStageUi(!!message.locked);
+}
+
+function updateStageUi(locked) {
+  var running = currentStage === 'running';
+  var busy = currentHealth === 'reconfiguring';
+
+  stageLine.textContent = running ? 'running' : 'config stage';
+  stageLine.className = running ? 'running' : (busy ? 'busy' : '');
+
+  var healthText = HEALTH_TEXT[currentHealth] || currentHealth;
+  if (currentHealth === 'error' && stageReason) {
+    healthText += ' — ' + stageReason;
+  }
+  healthLine.textContent = healthText;
+  healthLine.className = currentHealth === 'error' ? 'err' : '';
+
+  startButton.disabled = running || busy;
+  stopButton.disabled = !running || busy;
+
+  // The editor is read-only in Running Stage: banner + disabled fields.
+  document.body.classList.toggle('stage-running', running);
+  setEditorEditable(!running);
+  if (locked) {
+    setConfigStatus('err', 'config locked — Stop to edit');
+  }
+}
+
+function setEditorEditable(editable) {
+  var inputs = editorBody.querySelectorAll('input');
+  for (var i = 0; i < inputs.length; i++) inputs[i].disabled = !editable;
+  setButtonsEnabled(editable && configSchema !== null && !applyPending);
+}
+
+function startStage() {
+  if (!wsInstance || wsInstance.readyState !== 1) return;
+  if (currentStage === 'running' || currentHealth === 'reconfiguring') return;
+  wsInstance.send(JSON.stringify({ type: 'start' }));
+}
+
+function stopStage() {
+  if (!wsInstance || wsInstance.readyState !== 1) return;
+  if (currentStage !== 'running' || currentHealth === 'reconfiguring') return;
+  wsInstance.send(JSON.stringify({ type: 'stop' }));
+}
+
 // --- tiered config editor (issue #10) ----------------------------------
 
 var editorBody, saveButton, configStatus;
@@ -240,8 +308,7 @@ function onConfig(message) {
   configValues = message.values;
   renderEditor();
   setConfigStatus('', 'loaded');
-  saveButton.disabled = false;
-  applyButton.disabled = false;
+  updateStageUi(false);   // re-enables buttons/inputs iff not Running
 }
 
 function onConfigSaved(message) {
@@ -501,6 +568,10 @@ function animate(now) {
   statusEl = document.getElementById('status');
   statFrameEl = document.getElementById('stat-frame');
   statMetaEl = document.getElementById('stat-meta');
+  stageLine = document.getElementById('stage-line');
+  healthLine = document.getElementById('health-line');
+  startButton = document.getElementById('start');
+  stopButton = document.getElementById('stop');
   editorBody = document.getElementById('editor-body');
   saveButton = document.getElementById('save');
   applyButton = document.getElementById('apply');
@@ -513,6 +584,8 @@ function animate(now) {
   });
   saveButton.addEventListener('click', saveConfig);
   applyButton.addEventListener('click', applyConfig);
+  startButton.addEventListener('click', startStage);
+  stopButton.addEventListener('click', stopStage);
 
   initScene();
   connect();

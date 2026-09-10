@@ -17,6 +17,7 @@ Run from the radar_pi/ directory:
 """
 
 import json
+import tempfile
 import threading
 import time
 import unittest
@@ -119,8 +120,12 @@ class FakeSerialDevice:
 class SetupToolHostTests(unittest.TestCase):
 
     def setUp(self):
+        # Fresh data dir per test: a Working Config persisted there by an
+        # earlier session would trigger boot auto-Running (issue #12).
+        self.data_dir = tempfile.mkdtemp(prefix='setup-tool-host-')
         self.device = FakeSerialDevice()
-        self.host = SetupToolHost(self.device, bind='127.0.0.1', port=0)
+        self.host = SetupToolHost(self.device, bind='127.0.0.1', port=0,
+                                  config_dir=self.data_dir)
         self.host.start()
         self.addCleanup(self.host.stop)
         self.port = self.host.actual_port
@@ -167,10 +172,20 @@ class SetupToolHostTests(unittest.TestCase):
                 for n in (101, 102, 103)]
 
         with self.ws_connect() as ws:
+            # The connect snapshot precedes all frames (issue #12).
+            snapshot = json.loads(ws.recv(timeout=5))
+            self.assertEqual(snapshot['type'], 'stage')
+            self.assertEqual(snapshot['stage'], 'config')
+
             # Garbage before the first magic word must be discarded, exactly
-            # like on the wire.
+            # like on the wire. Stage/health events ride the same stream
+            # (issue #12) and are skipped while collecting frames.
             self.device.feed(b'\x00\x01 garbage ' + b''.join(raws))
-            messages = [json.loads(ws.recv(timeout=5)) for _ in raws]
+            messages = []
+            while len(messages) < len(raws):
+                message = json.loads(ws.recv(timeout=5))
+                if message.get('type') != 'stage':
+                    messages.append(message)
 
         self.assertTrue(all(m['type'] == 'frame' for m in messages))
         frames = [m['frame'] for m in messages]
@@ -193,9 +208,17 @@ class SetupToolHostTests(unittest.TestCase):
                 for n in (1, 2)]
 
         with self.ws_connect() as ws1, self.ws_connect() as ws2:
+            for ws in (ws1, ws2):
+                self.assertEqual(json.loads(ws.recv(timeout=5))['type'],
+                                 'stage')   # connect snapshot first
             self.device.feed(b''.join(raws))
-            got1 = [json.loads(ws1.recv(timeout=5)) for _ in raws]
-            got2 = [json.loads(ws2.recv(timeout=5)) for _ in raws]
+            got1, got2 = [], []
+            while len(got1) < len(raws) or len(got2) < len(raws):
+                for ws, got in ((ws1, got1), (ws2, got2)):
+                    if len(got) < len(raws):
+                        message = json.loads(ws.recv(timeout=5))
+                        if message.get('type') != 'stage':
+                            got.append(message)
 
         for got in (got1, got2):
             self.assertEqual([m['frame']['frame_num'] for m in got], [1, 2])
@@ -204,7 +227,9 @@ class SetupToolHostTests(unittest.TestCase):
 
     def test_stop_closes_the_server(self):
         device = FakeSerialDevice()
-        host = SetupToolHost(device, bind='127.0.0.1', port=0)
+        host = SetupToolHost(device, bind='127.0.0.1', port=0,
+                             config_dir=tempfile.mkdtemp(
+                                 prefix='setup-tool-host-'))
         host.start()
         port = host.actual_port
         host.stop()

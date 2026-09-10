@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Setup Tool host skeleton (issue #9, ADR-0004).
+Setup Tool host (issues #9–#12, ADR-0004).
 
 One process owns the radar's serial device, reads complete TI frames with the
 existing reader (``read_radar.read_one_frame``), parses them with the existing
@@ -13,8 +13,22 @@ inline validation, saved to the Pi-local Working Config. The editor's
 the full regenerated cfg → sensorStart at CLI baud, back to data baud, and
 success is inferred only from frames resuming (ADR-0001: the config channel
 has no ACK path). A frames-resumed timeout is surfaced as an explicit
-apply failure; the editor stays usable. Stages and overlays arrive in later
-tickets.
+apply failure; the editor stays usable.
+
+Since issue #12 the host runs the full **two-stage machine**:
+
+- **Config Stage** — everything editable, frames reach the browsers, UDP
+  to the server is suppressed (tuning never pollutes the DB).
+- **Running Stage** — config read-only, frames fan out to both browsers
+  (WS) and the server (UDP, raw complete TI frames — the identical wire
+  protocol ``radar_sender.py`` uses, so the persist path is untouched).
+
+**Start** applies the persisted Working Config and enters Running only
+once frames resumed; **Stop** suppresses UDP first, then issues sensorStop
+and unlocks the editor. On boot the process auto-enters Running when a
+persisted Working Config exists (headless self-recovery after a power
+blip); with none it enters Config Stage. Stage and sensor health
+(streaming / stopped / reconfiguring / error) ride the same WS stream.
 
 The serial device is injected (duck-typed to ``read(n) -> bytes``, i.e. the
 slice of the pyserial API the reader uses), so tests drive the whole host
@@ -48,6 +62,7 @@ from setup_tool.config_model import (
     schema_json,
 )
 from setup_tool.config_store import WorkingConfigStore
+from setup_tool.udp_forwarder import NullUdpForwarder, UdpForwarder
 from setup_tool.ws_hub import FrameHub
 from tlv_parser import parse_frame
 
@@ -56,6 +71,10 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
 
 #: HTTP + WebSocket share one port (one hole in the Pi's firewall).
 DEFAULT_HTTP_PORT = 8000
+
+#: UDP target of the recording server — the port ``radar_sender.py``
+#: streams to and ``radar_persist.py`` listens on.
+DEFAULT_UDP_PORT = 5005
 
 #: Per-client WS queue depth (frames) before drop-oldest kicks in.
 MAX_CLIENT_QUEUE = 64
@@ -75,7 +94,17 @@ APPLY_PAUSE_TIMEOUT = 5.0
 #: Poll cadence while an apply waits (reader parking, frames resuming).
 APPLY_POLL_INTERVAL = 0.05
 
-#: The static routes this skeleton serves. A fixed allow-list — no path
+#: The two stages (issue #12; CONTEXT.md fixes the vocabulary).
+STAGE_CONFIG = 'config'
+STAGE_RUNNING = 'running'
+
+#: Sensor health states (issue #12; the page shows these verbatim).
+HEALTH_STOPPED = 'stopped'
+HEALTH_RECONFIGURING = 'reconfiguring'
+HEALTH_STREAMING = 'streaming'
+HEALTH_ERROR = 'error'
+
+#: The static routes this host serves. A fixed allow-list — no path
 #: traversal possible by construction.
 STATIC_FILES = {
     '/': ('index.html', 'text/html; charset=utf-8'),
@@ -118,12 +147,16 @@ class SetupToolHost:
     Owns two threads on top of the caller's: a blocking serial reader (it
     only touches the injected device and the hub, thread-safely) and an
     asyncio loop running the WebSocket server. The reader never blocks on a
-    client — the hub's bounded queues absorb slow browsers.
+    client — the hub's bounded queues absorb slow browsers. On top of the
+    stream the loop runs the two-stage machine (issue #12): 'config' /
+    'running' × sensor health, entered via Start/Stop and, on boot,
+    auto-Running when a Working Config is already persisted.
     """
 
     def __init__(self, device, bind='0.0.0.0', port=DEFAULT_HTTP_PORT,
                  static_dir=STATIC_DIR, max_client_queue=MAX_CLIENT_QUEUE,
-                 config_dir=None,
+                 config_dir=None, udp_target=None, udp_sink=None,
+                 auto_start=None,
                  apply_frames_timeout=APPLY_FRAMES_TIMEOUT,
                  apply_command_delay=APPLY_COMMAND_DELAY):
         self._device = device
@@ -139,7 +172,32 @@ class SetupToolHost:
         # the serial device only through the validated apply path below.
         # (The one-editing-session lock is a later ticket — #14.)
         self._config_store = WorkingConfigStore(data_dir=config_dir)
+        # Boot self-recovery (issue #12): auto-enter Running only when an
+        # earlier session persisted a Working Config — so the check runs
+        # BEFORE load() seeds the data dir from the template. ``auto_start``
+        # overrides the derivation (tests isolate concerns with False).
+        if auto_start is None:
+            auto_start = self._config_store.exists()
+        self._boot_auto_start = bool(auto_start)
         self._config_text, self._config_values = self._load_working_config()
+
+        # Running Stage fan-out: raw complete TI frames, one datagram each,
+        # to the recording server (the wire protocol radar_sender uses
+        # today). Injectable for tests; never raises into the reader.
+        if udp_sink is not None:
+            self._udp = udp_sink
+        elif udp_target is not None:
+            self._udp = UdpForwarder(udp_target)
+        else:
+            self._udp = NullUdpForwarder()
+
+        # The two-stage machine (issue #12). Stage flips between
+        # STAGE_CONFIG and STAGE_RUNNING; health tracks the sensor (the
+        # HEALTH_* constants). Both ride the WS stream as
+        # {'type': 'stage', ...} events, and every new client gets a
+        # snapshot on connect. Loop-thread only (set via the helpers).
+        self._stage = STAGE_CONFIG
+        self._health = HEALTH_STOPPED
 
         self._loop = None
         self._shutdown = None           # asyncio.Event, created on the loop
@@ -175,6 +233,14 @@ class SetupToolHost:
             target=self._reader_loop, name='setup-tool-reader', daemon=True)
         self._reader_thread.start()
 
+        # Boot self-recovery: a persisted Working Config means the site was
+        # running before the power blip — re-enter Running headless. With
+        # none, the tool stays in Config Stage awaiting first configuration.
+        if self._boot_auto_start:
+            loop = self._loop
+            if loop is not None:
+                loop.call_soon_threadsafe(self._kick_auto_start)
+
     def stop(self):
         """Stop the reader and the server and wait for both threads."""
         self._stop.set()
@@ -182,6 +248,7 @@ class SetupToolHost:
             self._device.close()
         except Exception:
             pass
+        self._udp.close()
 
         loop = self._loop
         shutdown = self._shutdown
@@ -201,6 +268,21 @@ class SetupToolHost:
     def client_count(self):
         """Number of connected WS clients."""
         return self._hub.client_count
+
+    @property
+    def boot_auto_start(self):
+        """Whether a persisted Working Config existed before this boot."""
+        return self._boot_auto_start
+
+    @property
+    def stage(self):
+        """Current stage: 'config' or 'running'."""
+        return self._stage
+
+    @property
+    def health(self):
+        """Current sensor health: stopped / reconfiguring / streaming / error."""
+        return self._health
 
     # ---- serial reader thread ----------------------------------------------
 
@@ -237,8 +319,19 @@ class SetupToolHost:
             if parsed is None:
                 continue
             self.frames_parsed += 1
+            # Running Stage fan-out: the raw complete TI frame, one UDP
+            # datagram — identical to radar_sender's wire protocol, so the
+            # server-side receiver/persister is untouched (ADR-0004).
+            # Config Stage: suppressed — tuning never reaches the DB.
+            if self._stage == STAGE_RUNNING:
+                self._udp.send(raw)
             loop = self._loop
             if loop is not None:
+                # Frames flowing is the sensor's real health signal (the
+                # config channel has no ACKs — ADR-0001).
+                if self._health != HEALTH_STREAMING:
+                    loop.call_soon_threadsafe(self._set_health,
+                                               HEALTH_STREAMING)
                 self._hub.publish_threadsafe(parsed, loop)
 
     # ---- WS/HTTP server thread ----------------------------------------------
@@ -266,11 +359,19 @@ class SetupToolHost:
 
         The same WS stream carries the frame broadcast (``frame``), the
         config editing protocol (``config_get`` / ``config_set`` / ``apply``
-        — the WS hub's envelope decision), and broadcast apply-progress
-        events. Sender and receiver run concurrently so a slow editor
-        request can never stall frame delivery for that client.
+        — the WS hub's envelope decision), broadcast apply-progress events,
+        and the stage machine protocol (issue #12): ``stage`` events for
+        stage + sensor health, ``start`` / ``stop`` as requests, and a
+        ``stage`` snapshot with ``locked: true`` answering config traffic
+        that arrives while Running (the editor is read-only then). Sender
+        and receiver run concurrently so a slow editor request can never
+        stall frame delivery for that client.
         """
         queue = self._hub.subscribe()
+        # First message: the current stage/health snapshot, so the page
+        # knows exactly what it connected to (issue #12's always-visible
+        # state) before any frame or transition event arrives.
+        await self._send_stage_snapshot(connection)
         sender = asyncio.create_task(self._client_send_loop(connection, queue))
         try:
             async for message in connection:
@@ -331,11 +432,133 @@ class SetupToolHost:
                 'text': self._config_text,
             }))
         elif kind == 'config_set':
+            if self._stage == STAGE_RUNNING:
+                await self._send_stage_snapshot(connection, locked=True)
+                return
             if await self._validate_and_persist(
                     connection, request.get('values') or {}) is None:
                 return
         elif kind == 'apply':
+            if self._stage == STAGE_RUNNING:
+                await self._send_stage_snapshot(connection, locked=True)
+                return
             await self._apply_config(connection, request.get('values') or {})
+        elif kind == 'start':
+            await self._enter_running(connection)
+        elif kind == 'stop':
+            await self._handle_stop(connection)
+
+    # ---- the two-stage machine (issue #12) ---------------------------------
+
+    def _stage_fields(self, locked=False, reason=None):
+        """Fields of a ``stage`` event (same shape as the connect snapshot)."""
+        fields = {'stage': self._stage, 'health': self._health}
+        if locked:
+            fields['locked'] = True
+        if reason is not None:
+            fields['reason'] = reason
+        return fields
+
+    async def _send_stage_snapshot(self, connection, locked=False,
+                                   reason=None):
+        """Answer one client with the current stage/health state."""
+        await connection.send(json.dumps(
+            {'type': 'stage',
+             **self._stage_fields(locked=locked, reason=reason)},
+            separators=(',', ':')))
+
+    def _set_stage(self, stage):
+        """Flip the stage and broadcast it (loop thread only).
+
+        Entering 'config' also gates the reader's UDP fan-out — from the
+        moment the flip lands, tuning frames stop reaching the server.
+        """
+        if stage != self._stage:
+            self._stage = stage
+            self._broadcast_stage()
+
+    def _set_health(self, health, reason=None):
+        """Update sensor health and broadcast it (loop thread only)."""
+        if health == self._health and reason is None:
+            return
+        self._health = health
+        self._broadcast_stage(reason=reason)
+
+    def _broadcast_stage(self, reason=None):
+        self._hub.publish_event('stage', **self._stage_fields(reason=reason))
+
+    async def _enter_running(self, connection=None):
+        """**Start**: apply the Working Config and enter Running Stage.
+
+        The full blind sequence — sensorStop → flushCfg → the persisted
+        cfg → sensorStart at CLI baud → back to data baud — is
+        deterministic whether the sensor was streaming or stopped, so
+        Start works from a fresh boot, a deliberate stop, or mid-tuning.
+        Running (and with it the UDP fan-out) is entered only once frames
+        resumed; a timeout leaves the tool in Config Stage with an error
+        health and the editor usable. ``connection=None`` is the boot
+        self-recovery path: no browser involved, UDP flowing is the
+        observable.
+        """
+        if self._stage == STAGE_RUNNING:
+            if connection is not None:
+                await self._send_stage_snapshot(connection)
+            return
+        if self._applying:
+            if connection is not None:
+                await self._send_stage_snapshot(connection,
+                                                reason='another operation '
+                                                       'is in progress')
+            return
+        self._applying = True
+        try:
+            self._set_health(HEALTH_RECONFIGURING)
+            try:
+                baseline = await self._own_port_for_config()
+            except Exception as exc:  # device-level surprise (seam-tested)
+                self._set_health(HEALTH_ERROR, reason=f'start error: {exc!r}')
+                return
+            if not await self._wait_frames_resumed(baseline):
+                self._set_health(
+                    HEALTH_ERROR,
+                    reason=f'no frames resumed within '
+                           f'{self._apply_frames_timeout:g}s — the sensor '
+                           f'may not be streaming')
+                return
+            self._set_stage(STAGE_RUNNING)
+            self._set_health(HEALTH_STREAMING)
+        finally:
+            self._applying = False
+
+    async def _handle_stop(self, connection):
+        """**Stop**: back to Config Stage — deliberately.
+
+        UDP is suppressed the moment the stage flips (before any serial
+        byte moves), then the sensor is stopped and the editor unlocked.
+        """
+        if self._stage == STAGE_CONFIG:
+            await self._send_stage_snapshot(connection)
+            return
+        if self._applying:
+            await self._send_stage_snapshot(
+                connection, reason='another operation is in progress')
+            return
+        self._applying = True
+        try:
+            self._set_stage(STAGE_CONFIG)      # UDP suppressed from here
+            self._set_health(HEALTH_RECONFIGURING)
+            try:
+                await self._own_port_for_stop()
+            except Exception as exc:
+                self._set_health(HEALTH_ERROR, reason=f'stop error: {exc!r}')
+                return
+            self._set_health(HEALTH_STOPPED)
+        finally:
+            self._applying = False
+
+    def _kick_auto_start(self):
+        """Schedule the headless boot Start on the asyncio loop."""
+        asyncio.ensure_future(self._enter_running(connection=None))
 
     async def _validate_and_persist(self, connection, raw_values):
         """The save half both Save and Apply share (issue #10's gate).
@@ -388,57 +611,104 @@ class SetupToolHost:
         self._applying = True
         try:
             self._hub.publish_event('apply_progress', state='reconfiguring')
-
-            # Park the reader; the apply owns the port from here.
-            self._pause_reading.set()
+            self._set_health(HEALTH_RECONFIGURING)
             try:
-                if not await self._wait_reader_idle():
-                    self._hub.publish_event(
-                        'apply_progress', state='failed',
-                        reason='reader did not pause — port left untouched')
-                    return
-                baseline = self.frames_parsed
-
-                try:
-                    self._device.baudrate = CLI_BAUD
-                    self._device.reset_input_buffer()
-                    for line in cfg_command_lines(self._config_text):
-                        self._device.write((line + '\n').encode('ascii'))
-                        if self._apply_command_delay:
-                            await asyncio.sleep(self._apply_command_delay)
-                    self._device.baudrate = DATA_BAUD
-                    self._device.reset_input_buffer()
-                except Exception:
-                    # A blown write must not strand the port at CLI baud —
-                    # put it back where the reader can see the sensor.
-                    try:
-                        self._device.baudrate = DATA_BAUD
-                        self._device.reset_input_buffer()
-                    except Exception:
-                        pass
-                    raise
-            finally:
-                self._pause_reading.clear()
+                baseline = await self._own_port_for_config()
+            except Exception as exc:  # device-level surprise (seam-tested)
+                self._set_health(HEALTH_ERROR, reason=f'apply error: {exc!r}')
+                self._hub.publish_event('apply_progress', state='failed',
+                                        reason=f'apply error: {exc!r}')
+                return
 
             # Blind channel: frames resuming is the only success signal.
             self._hub.publish_event('apply_progress', state='frames_lost')
-            deadline = time.monotonic() + self._apply_frames_timeout
-            while self.frames_parsed <= baseline:
-                if time.monotonic() >= deadline:
-                    self._hub.publish_event(
-                        'apply_progress', state='failed',
-                        reason=f'no frames resumed within '
-                               f'{self._apply_frames_timeout:g}s — the '
-                               f'config may be bad')
-                    return
-                await asyncio.sleep(APPLY_POLL_INTERVAL)
-            self._hub.publish_event('apply_progress',
-                                    state='frames_resumed')
-        except Exception as exc:  # device-level surprise (seam-tested)
-            self._hub.publish_event('apply_progress', state='failed',
-                                    reason=f'apply error: {exc!r}')
+            if not await self._wait_frames_resumed(baseline):
+                self._set_health(
+                    HEALTH_ERROR,
+                    reason=f'no frames resumed within '
+                           f'{self._apply_frames_timeout:g}s — the config '
+                           f'may be bad')
+                self._hub.publish_event(
+                    'apply_progress', state='failed',
+                    reason=f'no frames resumed within '
+                           f'{self._apply_frames_timeout:g}s — the config '
+                           f'may be bad')
+                return
+            self._hub.publish_event('apply_progress', state='frames_resumed')
+            self._set_health(HEALTH_STREAMING)
         finally:
             self._applying = False
+
+    async def _own_port_for_config(self):
+        """Own the port and write the full blind cfg sequence (shared seam).
+
+        sensorStop → flushCfg → the full regenerated cfg → sensorStart, all
+        at CLI baud, then the port back to data baud — the exact sequence
+        Apply (issue #11), Start and boot self-recovery (issue #12) run.
+        Returns the frames-parsed baseline captured **at the park point**:
+        once the reader is parked no frame can move the counter, so only
+        frames parsed after the sequence count as "resumed" — a straggler
+        parsed between the request and the park must not fake success.
+        Raises on device failure; callers decide how to surface it.
+        """
+        lines = [line + '\n' for line in cfg_command_lines(self._config_text)]
+        return await self._own_port_writes(lines)
+
+    async def _own_port_for_stop(self):
+        """Own the port just long enough to issue sensorStop (Stop's seam).
+
+        Same park/baud/restore discipline as the config sequence. The
+        returned baseline goes unused: frames after a stop mean the sensor
+        ignored it, and the reader reports those as health on its own.
+        """
+        return await self._own_port_writes(['sensorStop\n'])
+
+    async def _own_port_writes(self, lines):
+        """The one place that owns the port: park the reader, write at CLI
+        baud, restore data baud, let the reader resume.
+
+        Pause the reader → wait for its park point → CLI baud → flush →
+        write each line (paced) → data baud → flush. A blown write still
+        puts the port back at data baud so the reader can see the sensor.
+        Returns the frames-parsed baseline at the park point (see
+        :meth:`_own_port_for_config`).
+        """
+        self._pause_reading.set()
+        try:
+            if not await self._wait_reader_idle():
+                raise RuntimeError('reader did not pause — '
+                                   'port left untouched')
+            baseline = self.frames_parsed
+            try:
+                self._device.baudrate = CLI_BAUD
+                self._device.reset_input_buffer()
+                for line in lines:
+                    self._device.write(line.encode('ascii'))
+                    if self._apply_command_delay:
+                        await asyncio.sleep(self._apply_command_delay)
+                self._device.baudrate = DATA_BAUD
+                self._device.reset_input_buffer()
+            except Exception:
+                # A blown write must not strand the port at CLI baud —
+                # put it back where the reader can see the sensor.
+                try:
+                    self._device.baudrate = DATA_BAUD
+                    self._device.reset_input_buffer()
+                except Exception:
+                    pass
+                raise
+        finally:
+            self._pause_reading.clear()
+        return baseline
+
+    async def _wait_frames_resumed(self, baseline):
+        """Wait until a frame parses after ``baseline``; False on timeout."""
+        deadline = time.monotonic() + self._apply_frames_timeout
+        while self.frames_parsed <= baseline:
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(APPLY_POLL_INTERVAL)
+        return True
 
     async def _wait_reader_idle(self):
         """Non-blocking wait for the reader to reach its pause point."""
@@ -508,14 +778,30 @@ def main(argv=None):
                         help='Directory for the persisted Working Config '
                              '(default: platform data dir, e.g. '
                              '~/.local/share/lares/setup_tool on the Pi)')
+    parser.add_argument('--udp-host', default=os.environ.get('LARES_UDP_HOST'),
+                        help='Recording server to forward raw frames to in '
+                             'Running Stage (default: $LARES_UDP_HOST, else '
+                             'none — frames are not recorded)')
+    parser.add_argument('--udp-port', type=int,
+                        default=int(os.environ.get('LARES_UDP_PORT',
+                                                   DEFAULT_UDP_PORT)),
+                        help=f'UDP port on the recording server (default: '
+                             f'{DEFAULT_UDP_PORT}, same as radar_sender)')
     args = parser.parse_args(argv)
 
     import serial  # deferred: the host module itself runs device-injected
 
+    udp_target = None
+    if args.udp_host:
+        udp_target = (args.udp_host, args.udp_port)
+
     print('Lares Setup Tool')
     print(f'  Serial: {args.serial_port} @ {DATA_BAUD} baud')
-    print('  Note: the sensor must already be streaming '
-          '(configure it once with read_radar.py).')
+    if udp_target is not None:
+        print(f'  UDP (Running Stage): {args.udp_host}:{args.udp_port}')
+    else:
+        print('  UDP (Running Stage): no server configured — frames will '
+              'not be recorded')
     print()
 
     try:
@@ -525,7 +811,13 @@ def main(argv=None):
         sys.exit(1)
 
     host = SetupToolHost(device, bind=args.bind, port=args.port,
-                         config_dir=args.data_dir)
+                         config_dir=args.data_dir, udp_target=udp_target)
+    if host.boot_auto_start:
+        print('Persisted Working Config found — auto-entering Running '
+              'Stage (boot self-recovery).')
+    else:
+        print('No persisted Working Config — entering Config Stage. The '
+              'sensor stays stopped until Apply or Start.')
     try:
         host.start()
     except RuntimeError as exc:

@@ -116,8 +116,23 @@ cfg → sensorStart at CLI baud and switches the port back to data baud. The
 config channel has no ACK path (ADR-0001), so the only success signal is
 frames resuming — the page shows "reconfiguring… → frames lost… → frames
 resumed ✓", and a frames-resumed timeout (15 s) is surfaced as an explicit
-apply failure after which the editor stays usable for a retry. Stages and
-overlays arrive in later tickets.
+apply failure after which the editor stays usable for a retry.
+
+Since issue #12 the tool runs the full **two-stage machine**: **Config Stage**
+(everything editable, frames reach the browsers, UDP to the server suppressed
+— tuning never pollutes the DB) and **Running Stage** (config read-only,
+frames fan out to both browsers and to the recording server as **raw complete
+TI frames over UDP — the identical wire protocol `radar_sender.py` streams**,
+so `radar_persist.py` is untouched). **Start** applies the persisted Working
+Config and enters Running only once frames resumed; **Stop** suppresses UDP,
+issues sensorStop, and unlocks the editor. On boot the process auto-enters
+Running when a persisted Working Config exists (headless self-recovery after
+a power blip); with none it enters Config Stage. Stage + sensor health
+(streaming / stopped / reconfiguring / error) are always visible on the page.
+For unattended installs, a systemd unit + install guide ship in
+[`deploy/lares-setup-tool.service`](deploy/lares-setup-tool.service) and
+[docs/hardware/setup-tool-install.md](docs/hardware/setup-tool-install.md).
+(Overlays arrive in later tickets.)
 
 **Working Config persistence**: saving validates locally (out-of-range or
 wrong-type values are rejected inline — nothing reaches the serial device) and
@@ -127,13 +142,19 @@ writes the full generated cfg to a Pi-local data dir
 vendor template (`radar_pi/xwr6843_aop_3d_people_track_6m.cfg`); the repo
 never stores the working copy.
 
-On the Pi (sensor already streaming — configure it once with `read_radar.py`):
+On the Pi (for a quick bench run — the tool configures the sensor itself,
+no pre-configuration needed):
 
 ```bash
 ~/radar_env/bin/pip install pyserial "websockets>=13"
 cd radar_pi
-~/radar_env/bin/python3 -m setup_tool --serial-port /dev/serial0 --port 8000
+~/radar_env/bin/python3 -m setup_tool --serial-port /dev/serial0 --port 8000 \
+    --udp-host <SERVER_IP>
 ```
+
+For an unattended install (start on boot, power-blip self-recovery), use the
+systemd unit instead: see
+[docs/hardware/setup-tool-install.md](docs/hardware/setup-tool-install.md).
 
 Then open `http://<pi-ip>:8000/` from any browser on the LAN and watch points
 move. The WS messages are `{"type": "frame", "frame": {...}}` where
@@ -141,8 +162,11 @@ move. The WS messages are `{"type": "frame", "frame": {...}}` where
 persist path consumes. Slow browsers can't stall the reader: per-client
 queues are bounded with drop-oldest overflow. The same stream carries the
 config protocol (`config_get` / `config_set` / `apply` → `config` /
-`config_saved` / `config_rejected`) and broadcast `apply_progress` events
-(`reconfiguring` / `frames_lost` / `frames_resumed` / `failed`).
+`config_saved` / `config_rejected`), broadcast `apply_progress` events
+(`reconfiguring` / `frames_lost` / `frames_resumed` / `failed`), and the
+stage protocol (issue #12): a `stage` snapshot on connect, `start` / `stop`
+requests, stage + health events, and `locked: true` on the snapshot answering
+config traffic that arrives while Running.
 
 ## Server consumers: either/or
 

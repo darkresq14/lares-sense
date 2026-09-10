@@ -60,6 +60,15 @@ class WorkingConfigStore:
         """Full path of the persisted Working Config."""
         return self._path
 
+    def exists(self):
+        """Whether a Working Config is already persisted in the data dir.
+
+        The boot self-recovery check (issue #12): auto-enter Running only
+        when an earlier session left a config behind — so this must be
+        asked **before** :meth:`load` seeds the data dir from the template.
+        """
+        return self._path.exists()
+
     def load(self):
         """Return the Working Config text, seeding it on first run.
 
