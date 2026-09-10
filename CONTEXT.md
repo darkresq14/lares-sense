@@ -33,3 +33,20 @@ _Avoid_: profile, preset, template
 A future server-side page that scrubs through recorded sessions from the
 database. Distinct from the Setup Tool; do not merge them.
 _Avoid_: playback tool
+
+**Aim Assist**:
+The Config Stage wizard that finds the corner bisector from two wall
+captures and then guides the installer to aim the sensor along it. The
+installer holds and rotates; every angle number comes from the sensor.
+_Avoid_: alignment tool, compass wizard
+
+**Wall Capture**:
+One averaged compass heading taken with the case bottom pressed flush
+against a wall, recording that wall's inward normal. Flushness is the only
+contact requirement; rotation of the unit is free.
+_Avoid_: calibration, wall scan
+
+**Measured Tilt**:
+Sensor-derived orientation of the mounted unit, offered to the sensor
+position fields via a one-click adopt rather than continuous auto-sync.
+_Avoid_: auto-tilt, live tilt sync
