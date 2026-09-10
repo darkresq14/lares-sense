@@ -142,9 +142,23 @@
   }
   #save:hover { filter: brightness(1.1); }
   #save:disabled { opacity: 0.4; cursor: default; }
+  #apply {
+    font: inherit;
+    color: var(--accent);
+    background: transparent;
+    border: 1px solid var(--accent);
+    padding: 4px 16px;
+    cursor: pointer;
+  }
+  #apply:hover { filter: brightness(1.2); }
+  #apply:disabled { opacity: 0.4; cursor: default; }
   #config-status { font-size: 11px; color: var(--dim); }
   #config-status.ok { color: var(--ok); }
   #config-status.err { color: var(--err); }
+  #apply-status { font-size: 11px; color: var(--dim); }
+  #apply-status.ok { color: var(--ok); }
+  #apply-status.err { color: var(--err); }
+  #apply-status.busy { color: var(--accent); }
   #editor-toggle {
     position: fixed;
     top: 16px;
@@ -232,7 +246,14 @@
     <div class="subtitle">Working Config · tiers guide what to touch</div>
     <div class="actions">
       <button id="save" type="button" disabled>Save</button>
+      <button id="apply" type="button" disabled
+        title="Apply saves this config and restarts the sensor with it. The
+config channel is blind (no ACKs) — success is frames resuming on the view."
+      >Apply</button>
       <span id="config-status">loading…</span>
+    </div>
+    <div class="actions">
+      <span id="apply-status">sensor untouched — Apply to reconfigure</span>
     </div>
   </header>
   <div class="body" id="editor-body"></div>

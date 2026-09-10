@@ -18,6 +18,7 @@ Run from the radar_pi/ directory:
 
 import json
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -45,6 +46,13 @@ class FakeSerialDevice:
     ``read`` blocks while the buffer is empty (a serial port waiting for data)
     and raises once the device is closed — which is how the reader loop learns
     to stop, mirroring a closed pyserial port.
+
+    The apply seam (issue #11) also models the pyserial slice the host uses
+    for reconfiguration: a settable ``timeout`` (``read`` returns ``b''``
+    once it expires, like pyserial), a settable ``baudrate``, and
+    ``reset_input_buffer``. Every such operation lands in :attr:`ops` — the
+    seam's ordered view of *what was done to the device when* (baud changes,
+    flushes, writes) alongside the raw :attr:`written` byte stream.
     """
 
     def __init__(self):
@@ -52,10 +60,32 @@ class FakeSerialDevice:
         self._cond = threading.Condition()
         self._closed = False
         self.written = bytearray()
+        self.timeout = None          # seconds; None = block (see read)
+        self._baudrate = None
+        #: Ordered seam log: ('baud', value) / ('flush',) / ('write', bytes).
+        self.ops = []
+
+    @property
+    def baudrate(self):
+        return self._baudrate
+
+    @baudrate.setter
+    def baudrate(self, value):
+        self._baudrate = value
+        self.ops.append(('baud', value))
 
     def write(self, data):
         """Record bytes the host tries to send to the device."""
+        data = bytes(data)
         self.written.extend(data)
+        self.ops.append(('write', data))
+
+    def reset_input_buffer(self):
+        """Drop pending input, like pyserial's flushInput."""
+        with self._cond:
+            del self._buf[:]
+            self._cond.notify_all()
+        self.ops.append(('flush',))
 
     def feed(self, data):
         with self._cond:
@@ -64,8 +94,16 @@ class FakeSerialDevice:
 
     def read(self, size=1):
         with self._cond:
+            deadline = (None if self.timeout is None
+                        else time.monotonic() + self.timeout)
             while not self._buf and not self._closed:
-                self._cond.wait(timeout=0.1)
+                if deadline is None:
+                    self._cond.wait(timeout=0.1)
+                else:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return b''      # read timeout, pyserial-style
+                    self._cond.wait(timeout=remaining)
             if not self._buf:
                 raise OSError('device closed')
             chunk = self._buf[:size]

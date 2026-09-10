@@ -19,7 +19,9 @@ class FrameHub:
     """Fan a parsed-frame dict out to subscribed client queues.
 
     ``publish``/``publish_threadsafe`` serialize the frame to JSON exactly
-    once per frame, then enqueue the same string for every client. A full
+    once per frame, then enqueue the same string for every client.
+    :meth:`publish_event` does the same for non-frame envelopes (apply
+    progress, later stage/health events) and runs on the loop thread. A full
     queue drops its oldest message to make room — a lagging client sees
     skipped frame numbers rather than delaying anyone else.
     """
@@ -61,8 +63,23 @@ class FrameHub:
         """
         if not self._clients:
             return
-        message = json.dumps({'type': 'frame', 'frame': frame},
-                             separators=(',', ':'))
+        self._enqueue(json.dumps({'type': 'frame', 'frame': frame},
+                                 separators=(',', ':')))
+
+    def publish_event(self, kind, **fields):
+        """Broadcast one non-frame envelope (e.g. apply progress) to all.
+
+        Same queue and drop-oldest rules as frames — health events ride the
+        frame stream (ADR-0004's WS protocol: frames + stage/health events,
+        one stream). Runs on the asyncio loop thread.
+        """
+        if not self._clients:
+            return
+        self._enqueue(json.dumps({'type': kind, **fields},
+                                 separators=(',', ':')))
+
+    def _enqueue(self, message):
+        """Put one serialized message on every client queue (drop-oldest)."""
         for queue in list(self._clients):
             if queue.full():
                 try:

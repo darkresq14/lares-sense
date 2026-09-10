@@ -109,7 +109,15 @@ since issue #10 — carries a **tiered config editor**: every parameter of the
 6 m people-tracking cfg is editable, grouped into *Room & mounting*,
 *Tracking* and *RF & chirp (expert)* tiers, with info text and documented
 ranges per field (sourced from the TI SDK user's guide and the people-tracking
-tuning guides). Stages, apply-to-sensor and overlays arrive in later tickets.
+tuning guides). Since issue #11 the editor's **Apply** button reconfigures
+the sensor **in-process, blind-verified**: it validates and persists the
+Working Config, then writes sensorStop → flushCfg → the full regenerated
+cfg → sensorStart at CLI baud and switches the port back to data baud. The
+config channel has no ACK path (ADR-0001), so the only success signal is
+frames resuming — the page shows "reconfiguring… → frames lost… → frames
+resumed ✓", and a frames-resumed timeout (15 s) is surfaced as an explicit
+apply failure after which the editor stays usable for a retry. Stages and
+overlays arrive in later tickets.
 
 **Working Config persistence**: saving validates locally (out-of-range or
 wrong-type values are rejected inline — nothing reaches the serial device) and
@@ -132,8 +140,9 @@ move. The WS messages are `{"type": "frame", "frame": {...}}` where
 `frame` is exactly what `tlv_parser.parse_frame` returns — the same shape the
 persist path consumes. Slow browsers can't stall the reader: per-client
 queues are bounded with drop-oldest overflow. The same stream carries the
-config protocol (`config_get` / `config_set` → `config` / `config_saved` /
-`config_rejected`).
+config protocol (`config_get` / `config_set` / `apply` → `config` /
+`config_saved` / `config_rejected`) and broadcast `apply_progress` events
+(`reconfiguring` / `frames_lost` / `frames_resumed` / `failed`).
 
 ## Server consumers: either/or
 

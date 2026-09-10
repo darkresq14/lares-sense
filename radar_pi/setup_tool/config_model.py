@@ -66,6 +66,16 @@ def parse_cfg(text):
     return values
 
 
+def cfg_command_lines(text):
+    """The command lines of a cfg text, in order — comments/blanks dropped.
+
+    What the sensor's CLI consumes line by line; Apply sends exactly these
+    at CLI baud (``read_radar.send_config`` filters a file the same way).
+    """
+    return [line.strip() for line in text.splitlines()
+            if line.strip() and not line.strip().startswith('%')]
+
+
 def format_token(field, value):
     """Render one field value as its cfg-file token."""
     if field.fmt == 'g':

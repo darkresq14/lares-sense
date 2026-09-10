@@ -8,9 +8,13 @@ parser (``tlv_parser.parse_frame``), and broadcasts every parsed frame over a
 WebSocket. The same port serves the static web page, which renders the live
 point cloud with three.js and the tiered config editor (issue #10): every
 parameter of the 6 m people-tracking cfg, editable with info text and
-inline validation, saved to the Pi-local Working Config. No stages, no
-overlays yet — open the page from a browser on the LAN, watch points move,
-tune parameters.
+inline validation, saved to the Pi-local Working Config. The editor's
+**Apply** (issue #11) is blind-verified in-process: sensorStop → flushCfg →
+the full regenerated cfg → sensorStart at CLI baud, back to data baud, and
+success is inferred only from frames resuming (ADR-0001: the config channel
+has no ACK path). A frames-resumed timeout is surfaced as an explicit
+apply failure; the editor stays usable. Stages and overlays arrive in later
+tickets.
 
 The serial device is injected (duck-typed to ``read(n) -> bytes``, i.e. the
 slice of the pyserial API the reader uses), so tests drive the whole host
@@ -34,8 +38,10 @@ import sys
 import threading
 import time
 
-from read_radar import DATA_BAUD, DEFAULT_PORT as DEFAULT_SERIAL_PORT, read_one_frame
+from read_radar import (CLI_BAUD, DATA_BAUD,
+                         DEFAULT_PORT as DEFAULT_SERIAL_PORT, read_one_frame)
 from setup_tool.config_model import (
+    cfg_command_lines,
     generate_cfg,
     normalize_values,
     parse_cfg,
@@ -54,6 +60,21 @@ DEFAULT_HTTP_PORT = 8000
 #: Per-client WS queue depth (frames) before drop-oldest kicks in.
 MAX_CLIENT_QUEUE = 64
 
+#: Seconds to wait for frames to resume after sensorStart before an apply
+#: is declared failed (the blind channel's only error detector, ADR-0001).
+APPLY_FRAMES_TIMEOUT = 15.0
+
+#: Seconds between cfg command lines while sending (the sensor's CLI parser
+#: needs breathing room; ``read_radar.send_config`` uses the same 50 ms).
+APPLY_COMMAND_DELAY = 0.05
+
+#: Seconds an apply waits for the reader thread to reach its pause point.
+#: Generously above the device read timeout (0.6 s on the real port).
+APPLY_PAUSE_TIMEOUT = 5.0
+
+#: Poll cadence while an apply waits (reader parking, frames resuming).
+APPLY_POLL_INTERVAL = 0.05
+
 #: The static routes this skeleton serves. A fixed allow-list — no path
 #: traversal possible by construction.
 STATIC_FILES = {
@@ -63,6 +84,32 @@ STATIC_FILES = {
     '/vendor/three.min.js': ('vendor/three.min.js',
                              'text/javascript; charset=utf-8'),
 }
+
+
+class _Paused(Exception):
+    """Raised inside the reader by the pause-aware device wrapper."""
+
+
+class _PauseAwareDevice:
+    """Reader-side wrapper: every ``read`` first checks the apply pause.
+
+    The reader blocks inside ``read_one_frame``/``find_magic_word`` for as
+    long as the line is quiet — exactly the situation during an apply (the
+    sensor is stopped). Without this wrapper the reader would never surface
+    to notice a pause request. A raised :class:`_Paused` unwinds whatever
+    partial frame was in progress; the reader catches it and parks. Writes,
+    baud switches and flushes go through the raw device — only ever while
+    the reader is parked, so the two never share the port.
+    """
+
+    def __init__(self, device, pause):
+        self._device = device
+        self._pause = pause
+
+    def read(self, size=1):
+        if self._pause.is_set():
+            raise _Paused()
+        return self._device.read(size)
 
 
 class SetupToolHost:
@@ -76,18 +123,21 @@ class SetupToolHost:
 
     def __init__(self, device, bind='0.0.0.0', port=DEFAULT_HTTP_PORT,
                  static_dir=STATIC_DIR, max_client_queue=MAX_CLIENT_QUEUE,
-                 config_dir=None):
+                 config_dir=None,
+                 apply_frames_timeout=APPLY_FRAMES_TIMEOUT,
+                 apply_command_delay=APPLY_COMMAND_DELAY):
         self._device = device
         self._bind = bind
         self._port = port
         self._static_dir = static_dir
         self._hub = FrameHub(maxsize=max_client_queue)
+        self._apply_frames_timeout = apply_frames_timeout
+        self._apply_command_delay = apply_command_delay
 
         # Working Config: loaded (seeded from the vendor template on first
-        # run) from the Pi-local data dir — never the repo. The config
-        # editing path touches only this store; the serial device is not
-        # involved until a later ticket wires Apply to the UART. (The
-        # one-editing-session lock is also a later ticket — #14.)
+        # run) from the Pi-local data dir — never the repo. Save/apply touch
+        # the serial device only through the validated apply path below.
+        # (The one-editing-session lock is a later ticket — #14.)
         self._config_store = WorkingConfigStore(data_dir=config_dir)
         self._config_text, self._config_values = self._load_working_config()
 
@@ -95,6 +145,13 @@ class SetupToolHost:
         self._shutdown = None           # asyncio.Event, created on the loop
         self._actual_port = None
         self._ready = threading.Event()
+
+        # Apply coordination: the reader parks between reads while the
+        # apply owns the port (writes at CLI baud, baud switches, flushes).
+        self._pause_reading = threading.Event()
+        self._reader_idle = threading.Event()
+        self._read_device = _PauseAwareDevice(device, self._pause_reading)
+        self._applying = False          # loop-thread only (see _apply_config)
 
         self._stop = threading.Event()
         self._server_thread = None
@@ -150,12 +207,21 @@ class SetupToolHost:
     def _reader_loop(self):
         """Blocking loop: read one frame, parse it, hand it to the hub.
 
-        Reuses the existing reader/parser untouched. Exits when the device
-        raises (closed / fatal serial error) or the host is stopping.
+        Reuses the existing reader/parser untouched through the pause-aware
+        device wrapper. Exits when the device raises (closed / fatal serial
+        error) or the host is stopping; parks while an apply owns the port
+        (the ``_Paused`` handshake — see :class:`_PauseAwareDevice`).
         """
         while not self._stop.is_set():
+            if self._pause_reading.is_set():
+                self._reader_idle.set()
+                self._pause_reading.wait(0.1)
+                continue
+            self._reader_idle.clear()
             try:
-                raw = read_one_frame(self._device)
+                raw = read_one_frame(self._read_device)
+            except _Paused:
+                continue               # loop top re-checks and parks
             except Exception:
                 break  # device closed or fatal — stop() is closing us down
             if raw is None:
@@ -198,11 +264,11 @@ class SetupToolHost:
     async def _handle_connection(self, connection):
         """Per-client pump: drain the hub queue, listen for config requests.
 
-        The same WS stream carries the frame broadcast (``frame``) and the
-        config editing protocol (``config_get`` / ``config_set`` — the WS
-        hub's envelope decision). Sender and receiver run concurrently so
-        a slow editor request can never stall frame delivery for that
-        client.
+        The same WS stream carries the frame broadcast (``frame``), the
+        config editing protocol (``config_get`` / ``config_set`` / ``apply``
+        — the WS hub's envelope decision), and broadcast apply-progress
+        events. Sender and receiver run concurrently so a slow editor
+        request can never stall frame delivery for that client.
         """
         queue = self._hub.subscribe()
         sender = asyncio.create_task(self._client_send_loop(connection, queue))
@@ -243,11 +309,13 @@ class SetupToolHost:
             return text, parse_cfg(text)
 
     async def _handle_client_message(self, connection, message):
-        """Dispatch one client JSON message (config protocol).
+        """Dispatch one client JSON message (config + apply protocol).
 
         Config requests are pure store operations: validate locally,
-        persist to the data dir, reply. Nothing here touches the serial
-        device — invalid values are rejected before any byte could leave.
+        persist to the data dir, reply. Apply validates with the same gate
+        and then owns the serial port for the blind reconfiguration — see
+        :meth:`_apply_config`. Invalid values are rejected before any byte
+        could leave in both cases.
         """
         try:
             request = json.loads(message)
@@ -263,19 +331,123 @@ class SetupToolHost:
                 'text': self._config_text,
             }))
         elif kind == 'config_set':
-            values, errors = normalize_values(request.get('values') or {})
-            if errors:
-                await connection.send(json.dumps(
-                    {'type': 'config_rejected', 'errors': errors}))
+            if await self._validate_and_persist(
+                    connection, request.get('values') or {}) is None:
                 return
-            self._config_text = generate_cfg(values)
-            self._config_values = values
-            self._config_store.save(self._config_text)
-            await connection.send(json.dumps({
-                'type': 'config_saved',
-                'values': values,
-                'text': self._config_text,
-            }))
+        elif kind == 'apply':
+            await self._apply_config(connection, request.get('values') or {})
+
+    async def _validate_and_persist(self, connection, raw_values):
+        """The save half both Save and Apply share (issue #10's gate).
+
+        Validate locally, persist the Working Config, reply. Returns the
+        normalized values, or ``None`` after a ``config_rejected`` reply.
+        Zero serial interaction — the gate an Apply must pass before any
+        byte can leave (ADR-0004).
+        """
+        values, errors = normalize_values(raw_values)
+        if errors:
+            await connection.send(json.dumps(
+                {'type': 'config_rejected', 'errors': errors}))
+            return None
+        self._config_text = generate_cfg(values)
+        self._config_values = values
+        self._config_store.save(self._config_text)
+        await connection.send(json.dumps({
+            'type': 'config_saved',
+            'values': values,
+            'text': self._config_text,
+        }))
+        return values
+
+    async def _apply_config(self, connection, raw_values):
+        """Blind apply with frame-resume feedback (issue #11, ADR-0001).
+
+        Validate locally → persist the Working Config → sensorStop →
+        flushCfg → the full regenerated cfg → sensorStart, all at CLI baud →
+        back to data baud → wait for frames. The config channel has no ACK
+        path, so the only success signal is a frame being parsed after the
+        sensorStart; every step is broadcast as ``apply_progress`` so the
+        page can show "reconfiguring → frames lost → frames resumed ✓".
+        A frames-resumed timeout is an explicit failure — the config editor
+        stays usable and the port is already back at data baud, so a retry
+        works once the sensor actually emits.
+
+        Runs entirely on the asyncio loop (writes are non-blocking buffer
+        pushes; pacing uses ``asyncio.sleep``), with the serial reader parked
+        for the duration — the two never touch the device concurrently.
+        """
+        values = await self._validate_and_persist(connection, raw_values)
+        if values is None:
+            # Invalid config: rejected above, not one byte has left.
+            return
+        if self._applying:
+            self._hub.publish_event('apply_progress', state='failed',
+                                    reason='another apply is in progress')
+            return
+        self._applying = True
+        try:
+            self._hub.publish_event('apply_progress', state='reconfiguring')
+
+            # Park the reader; the apply owns the port from here.
+            self._pause_reading.set()
+            try:
+                if not await self._wait_reader_idle():
+                    self._hub.publish_event(
+                        'apply_progress', state='failed',
+                        reason='reader did not pause — port left untouched')
+                    return
+                baseline = self.frames_parsed
+
+                try:
+                    self._device.baudrate = CLI_BAUD
+                    self._device.reset_input_buffer()
+                    for line in cfg_command_lines(self._config_text):
+                        self._device.write((line + '\n').encode('ascii'))
+                        if self._apply_command_delay:
+                            await asyncio.sleep(self._apply_command_delay)
+                    self._device.baudrate = DATA_BAUD
+                    self._device.reset_input_buffer()
+                except Exception:
+                    # A blown write must not strand the port at CLI baud —
+                    # put it back where the reader can see the sensor.
+                    try:
+                        self._device.baudrate = DATA_BAUD
+                        self._device.reset_input_buffer()
+                    except Exception:
+                        pass
+                    raise
+            finally:
+                self._pause_reading.clear()
+
+            # Blind channel: frames resuming is the only success signal.
+            self._hub.publish_event('apply_progress', state='frames_lost')
+            deadline = time.monotonic() + self._apply_frames_timeout
+            while self.frames_parsed <= baseline:
+                if time.monotonic() >= deadline:
+                    self._hub.publish_event(
+                        'apply_progress', state='failed',
+                        reason=f'no frames resumed within '
+                               f'{self._apply_frames_timeout:g}s — the '
+                               f'config may be bad')
+                    return
+                await asyncio.sleep(APPLY_POLL_INTERVAL)
+            self._hub.publish_event('apply_progress',
+                                    state='frames_resumed')
+        except Exception as exc:  # device-level surprise (seam-tested)
+            self._hub.publish_event('apply_progress', state='failed',
+                                    reason=f'apply error: {exc!r}')
+        finally:
+            self._applying = False
+
+    async def _wait_reader_idle(self):
+        """Non-blocking wait for the reader to reach its pause point."""
+        deadline = time.monotonic() + APPLY_PAUSE_TIMEOUT
+        while not self._reader_idle.is_set():
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(APPLY_POLL_INTERVAL)
+        return True
 
     def _process_request(self, connection, request):
         """Serve the static page over plain HTTP on the WS port.
@@ -322,7 +494,8 @@ def main(argv=None):
         prog='python3 -m setup_tool.host',
         description='Setup Tool: live point-cloud page, frame stream over '
                     'WebSocket, tiered config editor with Working Config '
-                    'persistence.')
+                    'persistence, and blind Apply (sensor restart with '
+                    'frame-resume verification).')
     parser.add_argument('--serial-port', default=DEFAULT_SERIAL_PORT,
                         help=f'Serial device path (default: {DEFAULT_SERIAL_PORT})')
     parser.add_argument('--bind', default='0.0.0.0',

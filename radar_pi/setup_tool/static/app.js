@@ -170,6 +170,7 @@ function connect() {
     else if (message.type === 'config') onConfig(message);
     else if (message.type === 'config_saved') onConfigSaved(message);
     else if (message.type === 'config_rejected') onConfigRejected(message);
+    else if (message.type === 'apply_progress') onApplyProgress(message);
   };
   ws.onclose = function () {
     setStatus('err', 'disconnected — retrying');
@@ -240,6 +241,7 @@ function onConfig(message) {
   renderEditor();
   setConfigStatus('', 'loaded');
   saveButton.disabled = false;
+  applyButton.disabled = false;
 }
 
 function onConfigSaved(message) {
@@ -270,6 +272,12 @@ function onConfigRejected(message) {
   setConfigStatus('err', errors.length + ' invalid value' +
                   (errors.length === 1 ? '' : 's') + ' — not saved');
   saveButton.disabled = false;
+  // If this rejection answered an Apply attempt, say so on the apply line
+  // (a plain Save rejection leaves the sensor-untouched text alone).
+  if (applyPending) {
+    applyPending = false;
+    setApplyStatus('err', 'apply blocked — fix invalid values first');
+  }
 }
 
 function clearFieldErrors() {
@@ -420,6 +428,57 @@ function saveConfig() {
   wsInstance.send(JSON.stringify({ type: 'config_set', values: collectValues() }));
 }
 
+// --- blind apply with frame-resume feedback (issue #11) -----------------
+
+var applyButton, applyStatus;
+var applyPending = false;      // an Apply is awaiting its verdict
+
+function setButtonsEnabled(enabled) {
+  saveButton.disabled = !enabled;
+  applyButton.disabled = !enabled;
+}
+
+function applyConfig() {
+  if (!wsInstance || wsInstance.readyState !== 1) return;
+  clearFieldErrors();
+  setConfigStatus('', 'saving…');
+  setButtonsEnabled(false);    // re-enabled by progress's terminal states
+  applyPending = true;
+  setApplyStatus('busy', 'applying…');
+  // One round trip: the host validates (rejecting before any serial byte),
+  // persists the Working Config, and reboots the sensor with it.
+  wsInstance.send(JSON.stringify({ type: 'apply', values: collectValues() }));
+}
+
+// Progress states mirror the host's blind sequence: reconfiguring →
+// frames lost → frames resumed ✓. The config channel has no ACKs
+// (ADR-0001) — frames resuming is the only success signal.
+function onApplyProgress(message) {
+  switch (message.state) {
+  case 'reconfiguring':
+    setApplyStatus('busy', 'reconfiguring…');
+    break;
+  case 'frames_lost':
+    setApplyStatus('busy', 'frames lost…');
+    break;
+  case 'frames_resumed':
+    setApplyStatus('ok', 'frames resumed ✓');
+    applyPending = false;
+    setButtonsEnabled(true);
+    break;
+  case 'failed':
+    setApplyStatus('err', 'apply failed — ' + (message.reason || '?'));
+    applyPending = false;
+    setButtonsEnabled(true);
+    break;
+  }
+}
+
+function setApplyStatus(cls, text) {
+  applyStatus.className = cls;
+  applyStatus.textContent = text;
+}
+
 // --- main loop ---------------------------------------------------------
 
 function animate(now) {
@@ -444,13 +503,16 @@ function animate(now) {
   statMetaEl = document.getElementById('stat-meta');
   editorBody = document.getElementById('editor-body');
   saveButton = document.getElementById('save');
+  applyButton = document.getElementById('apply');
   configStatus = document.getElementById('config-status');
+  applyStatus = document.getElementById('apply-status');
 
   document.body.classList.add('editor-open');
   document.getElementById('editor-toggle').addEventListener('click', function () {
     document.body.classList.toggle('editor-open');
   });
   saveButton.addEventListener('click', saveConfig);
+  applyButton.addEventListener('click', applyConfig);
 
   initScene();
   connect();
