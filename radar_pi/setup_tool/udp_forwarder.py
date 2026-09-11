@@ -27,14 +27,10 @@ class UdpForwarder:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._failed = False
 
-        #: Datagrams handed to the OS (diagnostics for the CLI).
-        self.sent = 0
-
     def send(self, data):
         """One datagram per complete frame — today's wire protocol."""
         try:
             self._sock.sendto(bytes(data), self._target)
-            self.sent += 1
             self._failed = False
         except OSError as exc:
             if not self._failed:
@@ -56,10 +52,8 @@ class NullUdpForwarder:
 
     def __init__(self):
         self._warned = False
-        self.sent = 0
 
     def send(self, data):
-        self.sent += 1
         if not self._warned:
             self._warned = True
             print('setup-tool: Running Stage without a UDP target '

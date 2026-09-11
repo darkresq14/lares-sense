@@ -22,6 +22,8 @@ Run from the radar_pi/ directory:
     python3 -m unittest tests.test_setup_tool_stages -v
 """
 
+import contextlib
+import io
 import json
 import socket
 import tempfile
@@ -278,6 +280,27 @@ class SetupToolStageTests(unittest.TestCase):
         # Boot applied the persisted Working Config, full blind sequence.
         self.assertEqual(bytes(self.device.written),
                          self.expected_cfg_bytes())
+
+    def test_boot_auto_start_failure_logs_and_stays_config_stage(self):
+        # Persisted Working Config but the sensor never emits (loose
+        # connector, dead sensor): the headless auto-enter must fail
+        # loudly in the journal — no browser exists to see the WS error.
+        data_dir = tempfile.mkdtemp(prefix='setup-tool-bootfail-')
+        WorkingConfigStore(data_dir=data_dir).load()
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.make_host(data_dir=data_dir)   # no feeder: silent sensor
+            time.sleep(HOST_FAST_TIMEOUT + 1.0)
+
+        self.assertIn('boot auto-enter of Running Stage failed',
+                      stderr.getvalue())
+        with self.ws_connect() as ws:
+            snapshot = json.loads(ws.recv(timeout=5))
+        self.assertEqual(snapshot['stage'], 'config')
+        self.assertEqual(snapshot['health'], 'error')
+        # Nothing was ever recorded.
+        self.assertEqual(self.udp_drain(), 0)
 
     def test_boot_without_persisted_config_enters_config_stage(self):
         self.make_host()      # fresh data dir: nothing persisted yet

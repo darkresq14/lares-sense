@@ -424,6 +424,11 @@ class SetupToolHost:
             return
         kind = request.get('type') if isinstance(request, dict) else None
 
+        if kind in ('config_set', 'apply') and self._stage == STAGE_RUNNING:
+            # Running Stage is read-only: the editor is locked.
+            await self._send_stage_snapshot(connection, locked=True)
+            return
+
         if kind == 'config_get':
             await connection.send(json.dumps({
                 'type': 'config',
@@ -432,16 +437,10 @@ class SetupToolHost:
                 'text': self._config_text,
             }))
         elif kind == 'config_set':
-            if self._stage == STAGE_RUNNING:
-                await self._send_stage_snapshot(connection, locked=True)
-                return
             if await self._validate_and_persist(
                     connection, request.get('values') or {}) is None:
                 return
         elif kind == 'apply':
-            if self._stage == STAGE_RUNNING:
-                await self._send_stage_snapshot(connection, locked=True)
-                return
             await self._apply_config(connection, request.get('values') or {})
         elif kind == 'start':
             await self._enter_running(connection)
@@ -516,19 +515,30 @@ class SetupToolHost:
             try:
                 baseline = await self._own_port_for_config()
             except Exception as exc:  # device-level surprise (seam-tested)
-                self._set_health(HEALTH_ERROR, reason=f'start error: {exc!r}')
+                self._fail_start(f'start error: {exc!r}', connection)
                 return
             if not await self._wait_frames_resumed(baseline):
-                self._set_health(
-                    HEALTH_ERROR,
-                    reason=f'no frames resumed within '
-                           f'{self._apply_frames_timeout:g}s — the sensor '
-                           f'may not be streaming')
+                self._fail_start(
+                    f'no frames resumed within '
+                    f'{self._apply_frames_timeout:g}s — the sensor may '
+                    f'not be streaming', connection)
                 return
             self._set_stage(STAGE_RUNNING)
             self._set_health(HEALTH_STREAMING)
         finally:
             self._applying = False
+
+    def _fail_start(self, reason, connection):
+        """Fail a Start: error health; headless boot also hits the journal.
+
+        A browser Start shows the reason as a WS ``stage`` event; the boot
+        self-recovery path has no page watching, so it also logs one line
+        to stderr (visible via ``journalctl`` per the install doc).
+        """
+        if connection is None:
+            print(f'setup-tool: boot auto-enter of Running Stage failed — '
+                  f'{reason}', file=sys.stderr)
+        self._set_health(HEALTH_ERROR, reason=reason)
 
     async def _handle_stop(self, connection):
         """**Stop**: back to Config Stage — deliberately.
