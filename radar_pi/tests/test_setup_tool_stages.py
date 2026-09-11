@@ -53,10 +53,11 @@ class FrameFeeder:
     buffer mid-flight still see frames afterwards.
     """
 
-    def __init__(self, device, first_num=1, interval=0.03):
+    def __init__(self, device, first_num=1, interval=0.03, n_points=3):
         self._device = device
         self._next = first_num
         self._interval = interval
+        self._n_points = n_points
         self._stop = threading.Event()
         self._thread = None
 
@@ -68,7 +69,7 @@ class FrameFeeder:
     def _run(self):
         while not self._stop.is_set():
             self._device.feed(build_tracking_frame_bytes(
-                self._next, tid=7, n_points=3))
+                self._next, tid=7, n_points=self._n_points))
             self._next += 1
             self._stop.wait(self._interval)
 

@@ -172,6 +172,14 @@
   body.editor-open .stats { right: 412px; }
   body.editor-open .hint { right: 412px; }
 
+  /* ---- read-only monitor (issue #14) ----
+     Running Stage hides the edit controls entirely: the page is a live
+     monitor (cloud, overlays, tracks) anyone on the LAN can watch. */
+  body.stage-running #editor,
+  body.stage-running #editor-toggle { display: none; }
+  body.stage-running .stats { right: 16px; }
+  body.stage-running .hint { right: 16px; }
+
   /* ---- tiered config editor (issue #10) ---- */
   #editor {
     position: fixed;
@@ -239,6 +247,9 @@
   }
   body.stage-running #lock-banner { display: block; }
   body.stage-running .fields input { opacity: 0.5; }
+  /* Editing lock (issue #14): another browser owns the editing session
+     while this one is a read-only view. Text set by JS per cause. */
+  body.edit-locked #lock-banner { display: block; }
   #editor-toggle {
     position: fixed;
     top: 16px;
@@ -358,7 +369,7 @@ config channel is blind (no ACKs) — success is frames resuming on the view."
     <div class="actions">
       <span id="apply-status">sensor untouched — Apply to reconfigure</span>
     </div>
-    <div id="lock-banner">Running — config locked. Stop to edit.</div>
+    <div id="lock-banner">config locked</div>
   </header>
   <div class="body" id="editor-body"></div>
 </aside>

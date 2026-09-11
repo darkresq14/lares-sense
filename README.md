@@ -132,7 +132,19 @@ a power blip); with none it enters Config Stage. Stage + sensor health
 For unattended installs, a systemd unit + install guide ship in
 [`deploy/lares-setup-tool.service`](deploy/lares-setup-tool.service) and
 [docs/hardware/setup-tool-install.md](docs/hardware/setup-tool-install.md).
-(Overlays arrive in later tickets.)
+
+Since issue #14 the connection side is safe for a crowd: **one editing
+session at a time** — the first browser to open the editor owns the
+editing lock; additional browsers render read-only with a "config locked"
+banner and their submits are rejected server-side, and the lock frees the
+moment the editing tab goes away (or its editor panel closes — the page
+re-claims it on the release event). In **Running Stage the edit controls
+are hidden entirely**: the page is a read-only live monitor (cloud,
+overlays, tracks) anyone on the LAN can watch. Slow or frozen browsers
+can never stall the reader loop, the UDP forwarding, or other clients:
+per-client send queues are bounded with drop-oldest overflow and each
+sender applies socket backpressure (websockets' `send()` flow control) —
+a frozen browser sees skipped frame numbers rather than delaying anyone.
 
 **Working Config persistence**: saving validates locally (out-of-range or
 wrong-type values are rejected inline — nothing reaches the serial device) and
@@ -163,10 +175,12 @@ persist path consumes. Slow browsers can't stall the reader: per-client
 queues are bounded with drop-oldest overflow. The same stream carries the
 config protocol (`config_get` / `config_set` / `apply` → `config` /
 `config_saved` / `config_rejected`), broadcast `apply_progress` events
-(`reconfiguring` / `frames_lost` / `frames_resumed` / `failed`), and the
+(`reconfiguring` / `frames_lost` / `frames_resumed` / `failed`), the
 stage protocol (issue #12): a `stage` snapshot on connect, `start` / `stop`
 requests, stage + health events, and `locked: true` on the snapshot answering
-config traffic that arrives while Running.
+config traffic that arrives while Running, and the editing lock protocol
+(issue #14): `edit_begin` / `edit_end` requests answered with a
+`lock` verdict and announced by broadcast `lock` events (held / released).
 
 ## Server consumers: either/or
 

@@ -27,6 +27,18 @@ Since issue #12 the host runs the full **two-stage machine**:
   (WS) and the server (UDP, raw complete TI frames — the identical wire
   protocol ``radar_sender.py`` uses, so the persist path is untouched).
 
+Since issue #14 the connection side is safe for a crowd: **one editing
+session at a time** — the first browser to open the editor owns the
+editing lock (``edit_begin`` / ``edit_end``; extra browsers get a
+read-only view with a "config locked" banner, and the lock frees when
+the editing tab goes away or its panel closes) — and Running Stage turns
+the page into a **read-only monitor** anyone on the LAN can watch (edit
+controls hidden entirely; the cloud, overlays and tracks stay live).
+The WS hub's per-client queues are bounded with drop-oldest overflow and
+each sender applies socket backpressure via ``drain()`` — a slow or
+frozen browser can never stall the reader loop, the UDP forwarding, or
+other clients.
+
 **Start** applies the persisted Working Config and enters Running only
 once frames resumed; **Stop** suppresses UDP first, then issues sensorStop
 and unlocks the editor. On boot the process auto-enters Running when a
@@ -174,8 +186,8 @@ class SetupToolHost:
 
         # Working Config: loaded (seeded from the vendor template on first
         # run) from the Pi-local data dir — never the repo. Save/apply touch
-        # the serial device only through the validated apply path below.
-        # (The one-editing-session lock is a later ticket — #14.)
+        # the serial device only through the validated apply path below,
+        # gated by the editing lock (issue #14) in Config Stage.
         self._config_store = WorkingConfigStore(data_dir=config_dir)
         # Boot self-recovery (issue #12): auto-enter Running only when an
         # earlier session persisted a Working Config — so the check runs
@@ -203,6 +215,13 @@ class SetupToolHost:
         # snapshot on connect. Loop-thread only (set via the helpers).
         self._stage = STAGE_CONFIG
         self._health = HEALTH_STOPPED
+
+        # The editing lock (issue #14): the connection of the browser
+        # that currently owns the single editing session, or None.
+        # Taken on edit_begin, freed on edit_end or when that connection
+        # goes away. Loop-thread only (see _handle_edit_begin and
+        # _handle_connection's finally).
+        self._edit_owner = None
 
         self._loop = None
         self._shutdown = None           # asyncio.Event, created on the loop
@@ -365,18 +384,27 @@ class SetupToolHost:
         The same WS stream carries the frame broadcast (``frame``), the
         config editing protocol (``config_get`` / ``config_set`` / ``apply``
         — the WS hub's envelope decision), broadcast apply-progress events,
-        and the stage machine protocol (issue #12): ``stage`` events for
+        the stage machine protocol (issue #12): ``stage`` events for
         stage + sensor health, ``start`` / ``stop`` as requests, and a
         ``stage`` snapshot with ``locked: true`` answering config traffic
-        that arrives while Running (the editor is read-only then). Sender
-        and receiver run concurrently so a slow editor request can never
-        stall frame delivery for that client.
+        that arrives while Running (the editor is read-only then), and
+        the editing lock protocol (issue #14): ``edit_begin`` / ``edit_end``
+        requests answered and announced by ``lock`` events — the single
+        editing session, held by one browser at a time. The lock frees
+        here when its owner's connection goes away. Sender and receiver
+        run concurrently so a slow editor request can never stall frame
+        delivery for that client.
         """
         queue = self._hub.subscribe()
         # First message: the current stage/health snapshot, so the page
         # knows exactly what it connected to (issue #12's always-visible
         # state) before any frame or transition event arrives.
         await self._send_stage_snapshot(connection)
+        if self._edit_owner is not None:
+            # Second message for a browser connecting mid-session: the
+            # editing lock is held — read-only view with the banner
+            # (issue #14). A notice, not a reply: no ``granted`` field.
+            await self._send_lock_event(connection, held=True)
         sender = asyncio.create_task(self._client_send_loop(connection, queue))
         try:
             async for message in connection:
@@ -386,9 +414,22 @@ class SetupToolHost:
         finally:
             sender.cancel()
             self._hub.unsubscribe(queue)
+            if self._edit_owner is connection:
+                # The editing tab went away: the lock frees, and every
+                # other browser hears it (issue #14's release criterion).
+                self._edit_owner = None
+                self._hub.publish_event('lock', held=False)
 
     async def _client_send_loop(self, connection, queue):
-        """Drain the hub queue into the socket (the old pump body)."""
+        """Drain the hub queue into the socket (the old pump body).
+
+        Backpressure comes free: websockets' ``send()`` applies the
+        transport's flow control, so when a client stops reading and its
+        socket buffer passes the high-water mark, this sender parks inside
+        ``send`` instead of buffering unboundedly — the client's bounded
+        hub queue fills and drops oldest (issue #14's hub hardening; the
+        sender stalling is fine, it is per-client).
+        """
         try:
             while True:
                 message = await queue.get()
@@ -430,9 +471,23 @@ class SetupToolHost:
         kind = request.get('type') if isinstance(request, dict) else None
 
         if kind in ('config_set', 'apply') and self._stage == STAGE_RUNNING:
-            # Running Stage is read-only: the editor is locked.
+            # Running Stage is read-only: the editor is a live monitor.
             await self._send_stage_snapshot(connection, locked=True)
             return
+
+        if kind in ('config_set', 'apply'):
+            if self._edit_owner is None:
+                # "The first browser to edit owns the session" (issue #14),
+                # enforced at the server: a submit that arrives unclaimed
+                # claims the lock — silently, so the wire stays quiet for
+                # pages that already follow the edit_begin protocol.
+                self._edit_owner = connection
+            elif self._edit_owner is not connection:
+                # Another browser owns the editing session: this one is a
+                # read-only view (issue #14). Rejected before any store or
+                # serial interaction.
+                await self._send_lock_reply(connection, granted=False)
+                return
 
         if kind == 'config_get':
             await connection.send(json.dumps({
@@ -451,6 +506,50 @@ class SetupToolHost:
             await self._enter_running(connection)
         elif kind == 'stop':
             await self._handle_stop(connection)
+        elif kind == 'edit_begin':
+            await self._handle_edit_begin(connection)
+        elif kind == 'edit_end':
+            await self._handle_edit_end(connection)
+
+    # ---- the editing lock (issue #14) -------------------------------------
+
+    async def _send_lock_event(self, connection, held):
+        """One ``lock`` event to a single client (notice or broadcast echo)."""
+        await connection.send(json.dumps({'type': 'lock', 'held': held},
+                                         separators=(',', ':')))
+
+    async def _send_lock_reply(self, connection, granted):
+        """Answer one ``edit_begin`` (or a submit from a read-only browser)."""
+        await connection.send(json.dumps(
+            {'type': 'lock', 'held': True, 'granted': granted},
+            separators=(',', ':')))
+
+    async def _handle_edit_begin(self, connection):
+        """Claim the single editing session for this browser.
+
+        The first browser to ask in Config Stage wins; later askers get a
+        denial and render the read-only view with the "config locked"
+        banner. The take is broadcast so every connected browser flips to
+        read-only at the same moment. In Running Stage the editor is
+        hidden entirely — the stage snapshot (locked) is the answer.
+        """
+        if self._stage == STAGE_RUNNING:
+            await self._send_stage_snapshot(connection, locked=True)
+            return
+        if self._edit_owner is None:
+            self._edit_owner = connection
+            await self._send_lock_reply(connection, granted=True)
+            self._hub.publish_event('lock', held=True)
+        elif self._edit_owner is connection:
+            await self._send_lock_reply(connection, granted=True)  # idempotent
+        else:
+            await self._send_lock_reply(connection, granted=False)
+
+    async def _handle_edit_end(self, connection):
+        """Release the editing session (the owner closed its editor panel)."""
+        if self._edit_owner is connection:
+            self._edit_owner = None
+            self._hub.publish_event('lock', held=False)
 
     # ---- the two-stage machine (issue #12) ---------------------------------
 

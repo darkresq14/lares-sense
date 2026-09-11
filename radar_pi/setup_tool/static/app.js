@@ -13,6 +13,15 @@
  * people. A color-by selector recolors points by height, SNR, doppler,
  * or owning track. Overlays rebuild live from the editor's DOM values —
  * every keystroke previews against the cloud, no Apply needed.
+ *
+ * Since issue #14 the page is safe for a crowd: **one editing session at a
+ * time** — this tab requests the editing lock when its editor opens
+ * (edit_begin / edit_end over the WS stream); if another browser owns it,
+ * this one renders read-only with a "config locked" banner, and the lock
+ * frees when that tab goes away (the page re-requests on the release
+ * event). In Running Stage all edit controls are hidden entirely — the
+ * page is a live monitor (cloud, overlays, tracks) with no way to touch
+ * anything.
  */
 
 // --- constants ---------------------------------------------------------
@@ -34,6 +43,13 @@ var wsInstance = null;
 var currentStage = 'config';
 var currentHealth = 'stopped';
 var stageReason = null;
+
+// Editing lock (issue #14): editOwned — this tab holds the single editing
+// session; editHeld — some tab holds it. The host answers edit_begin with
+// a verdict and broadcasts every take/release, so every browser flips to
+// read-only (or back) at the same moment, without a reload.
+var editOwned = false;
+var editHeld = false;
 
 var framesSeen = 0;
 var fpsCounter = 0;
@@ -168,6 +184,11 @@ function connect() {
   wsInstance = ws;
   ws.onopen = function () {
     setStatus('ok', 'stream live');
+    // A fresh connection owns nothing: the server freed our old lock when
+    // the previous socket died. The stage snapshot (first message) drives
+    // the first edit_begin via maybeRequestEditLock().
+    editOwned = false;
+    editHeld = false;
     ws.send(JSON.stringify({ type: 'config_get' }));
   };
   ws.onmessage = function (event) {
@@ -184,9 +205,12 @@ function connect() {
     else if (message.type === 'config_rejected') onConfigRejected(message);
     else if (message.type === 'apply_progress') onApplyProgress(message);
     else if (message.type === 'stage') onStage(message);
+    else if (message.type === 'lock') onLock(message);
   };
   ws.onclose = function () {
     setStatus('err', 'disconnected — retrying');
+    editOwned = false;
+    editHeld = false;
     scheduleReconnect();
   };
   ws.onerror = function () {
@@ -476,6 +500,9 @@ function onStage(message) {
   currentHealth = message.health || currentHealth;
   stageReason = message.reason || null;
   updateStageUi(!!message.locked);
+  // Back in Config Stage (first snapshot, or Stop just landed): claim the
+  // editing session if this tab's editor is open and nobody holds it.
+  maybeRequestEditLock();
 }
 
 function updateStageUi(locked) {
@@ -495,12 +522,62 @@ function updateStageUi(locked) {
   startButton.disabled = running || busy;
   stopButton.disabled = !running || busy;
 
-  // The editor is read-only in Running Stage: banner + disabled fields.
+  // Running Stage: read-only monitor — the CSS hides the edit controls
+  // entirely (issue #14); Config Stage: editable unless another browser
+  // owns the editing session.
   document.body.classList.toggle('stage-running', running);
-  setEditorEditable(!running);
+  updateEditorAccess();
   if (locked) {
     setConfigStatus('err', 'config locked — Stop to edit');
   }
+}
+
+// --- editing lock (issue #14) ------------------------------------------
+
+var lockBanner;
+
+function onLock(message) {
+  if (typeof message.granted === 'boolean') {
+    editOwned = message.granted;   // the verdict on our edit_begin
+  }
+  editHeld = !!message.held;
+  if (!editHeld) editOwned = false;   // a release frees everyone's view
+  updateEditorAccess();
+  // The lock just freed and this tab wants to edit: try to take it (the
+  // host arbitrates if several browsers race — one wins, the rest render
+  // read-only again).
+  maybeRequestEditLock();
+}
+
+function updateEditorAccess() {
+  var running = currentStage === 'running';
+  var lockedByOther = !running && editHeld && !editOwned;
+  document.body.classList.toggle('edit-locked', lockedByOther);
+  lockBanner.textContent = running
+    ? 'Running — config locked. Stop to edit.'
+    : 'Config locked — another browser is editing. Read-only view.';
+  setEditorEditable(!running && !lockedByOther);
+}
+
+function editorIsOpen() {
+  return document.body.classList.contains('editor-open');
+}
+
+function maybeRequestEditLock() {
+  if (currentStage !== 'config') return;
+  if (editOwned || editHeld) return;
+  if (!editorIsOpen()) return;
+  if (!wsInstance || wsInstance.readyState !== 1) return;
+  wsInstance.send(JSON.stringify({ type: 'edit_begin' }));
+}
+
+function releaseEditLock() {
+  if (!editOwned) return;
+  editOwned = false;
+  if (wsInstance && wsInstance.readyState === 1) {
+    wsInstance.send(JSON.stringify({ type: 'edit_end' }));
+  }
+  updateEditorAccess();
 }
 
 function setEditorEditable(editable) {
@@ -803,10 +880,15 @@ function animate(now) {
   applyButton = document.getElementById('apply');
   configStatus = document.getElementById('config-status');
   applyStatus = document.getElementById('apply-status');
+  lockBanner = document.getElementById('lock-banner');
 
   document.body.classList.add('editor-open');
   document.getElementById('editor-toggle').addEventListener('click', function () {
-    document.body.classList.toggle('editor-open');
+    var open = document.body.classList.toggle('editor-open');
+    // Opening the editor claims the editing session; closing it releases
+    // the lock for whoever else wants to edit (issue #14).
+    if (open) maybeRequestEditLock();
+    else releaseEditLock();
   });
   saveButton.addEventListener('click', saveConfig);
   applyButton.addEventListener('click', applyConfig);
