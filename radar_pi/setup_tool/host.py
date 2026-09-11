@@ -49,6 +49,21 @@ blip); with none it enters Config Stage. Stage and sensor health
 The serial device is injected (duck-typed to ``read(n) -> bytes``, i.e. the
 slice of the pyserial API the reader uses), so tests drive the whole host
 through a fake device — the single testing seam ADR-0004 settled on.
+The IMU is injected the same way (duck-typed to ``read()`` returning
+radar-frame accel/mag; the real one is an smbus2 MPU9150 driver probed
+lazily at startup and silently absent when the chip is not there).
+
+Since issue #15 the host also samples that IMU ~10 Hz **in Config Stage
+only** (silent in Running Stage): measured tilt (pitch/roll in the radar
+frame), the tilt-compensated heading and the Aim Assist wizard state ride
+the same WS stream. The wizard averages a wall capture for ~2 s per wall,
+computes the corner bisector from the two headings (wrap-around-safe,
+valid for any corner angle — no compass calibration: both captures share
+the same constant distortion, so it cancels), then the live indicator
+reports the signed remaining error with a ±2.5° aimed band. A one-click
+"use measured" in the editor adopts the measured tilt into the
+``sensorPosition`` fields — the Working Config stays untouched until the
+installer saves or applies.
 
 The sensor must already be streaming: configure it once with
 ``read_radar.py`` (or any sender), then start this host against the port.
@@ -78,6 +93,18 @@ from setup_tool.config_model import (
     schema_json,
 )
 from setup_tool.config_store import WorkingConfigStore
+from setup_tool.imu import (
+    AIM_BAND_DEG,
+    AIM_CAPTURE_SECONDS,
+    IMU_SAMPLE_INTERVAL,
+    IMU_WINDOW_SECONDS,
+    Mpu9150,
+    RollingImu,
+    aim_error,
+    bisector,
+    pitch_roll,
+    tilt_comp_heading,
+)
 from setup_tool.udp_forwarder import NullUdpForwarder, UdpForwarder
 from setup_tool.ws_hub import FrameHub
 from tlv_parser import parse_frame
@@ -109,6 +136,16 @@ APPLY_PAUSE_TIMEOUT = 5.0
 
 #: Poll cadence while an apply waits (reader parking, frames resuming).
 APPLY_POLL_INTERVAL = 0.05
+
+# --- IMU / Aim Assist (issue #15) -----------------------------------------
+#: Defaults live with the math in imu.py; the constructor takes overrides
+#: so tests shrink the window and interval for fast settling.
+
+
+def _idle_aim():
+    """A fresh aim-wizard state (loop-thread replacement, see _aim)."""
+    return {'state': 'idle', 'wall': None, 'wall_a': None,
+            'wall_b': None, 'bisector': None, 'error': None}
 
 #: The two stages (issue #12; CONTEXT.md fixes the vocabulary).
 STAGE_CONFIG = 'config'
@@ -175,7 +212,9 @@ class SetupToolHost:
                  config_dir=None, udp_target=None, udp_sink=None,
                  auto_start=None,
                  apply_frames_timeout=APPLY_FRAMES_TIMEOUT,
-                 apply_command_delay=APPLY_COMMAND_DELAY):
+                 apply_command_delay=APPLY_COMMAND_DELAY,
+                 imu=None, imu_sample_interval=IMU_SAMPLE_INTERVAL,
+                 imu_window_s=IMU_WINDOW_SECONDS):
         self._device = device
         self._bind = bind
         self._port = port
@@ -228,6 +267,22 @@ class SetupToolHost:
         self._actual_port = None
         self._ready = threading.Event()
 
+        # IMU / Aim Assist (issue #15). The IMU is duck-typed to
+        # ``read() -> {ax..mz, t}`` (radar frame) — the same public path
+        # the real smbus2 driver takes, so tests feed synthetic vectors
+        # through a fake I2C bus (ADR-0004's seam discipline). None = no
+        # IMU: no badge, no events, the tool fully functional.
+        self._imu = imu
+        self._imu_interval = imu_sample_interval
+        self._imu_window = RollingImu(imu_window_s)
+        # Aim wizard state — loop-thread only; always replaced whole so
+        # the IMU thread's read of self._aim is a single atomic load.
+        # states: 'idle' -> 'capturing' (wall) -> 'half' (one captured)
+        # -> 'aiming' (bisector computed).
+        self._aim = _idle_aim()
+        self._imu_warned = False
+        self._imu_thread = None
+
         # Apply coordination: the reader parks between reads while the
         # apply owns the port (writes at CLI baud, baud switches, flushes).
         self._pause_reading = threading.Event()
@@ -257,6 +312,13 @@ class SetupToolHost:
             target=self._reader_loop, name='setup-tool-reader', daemon=True)
         self._reader_thread.start()
 
+        # The IMU thread samples only in Config Stage and stays silent in
+        # Running (issue #15) — a deployment sensor needs no compass.
+        if self._imu is not None:
+            self._imu_thread = threading.Thread(
+                target=self._imu_loop, name='setup-tool-imu', daemon=True)
+            self._imu_thread.start()
+
         # Boot self-recovery: a persisted Working Config means the site was
         # running before the power blip — re-enter Running headless. With
         # none, the tool stays in Config Stage awaiting first configuration.
@@ -273,6 +335,8 @@ class SetupToolHost:
         except Exception:
             pass
         self._udp.close()
+        if self._imu is not None:
+            self._imu.close()
 
         loop = self._loop
         shutdown = self._shutdown
@@ -307,6 +371,157 @@ class SetupToolHost:
     def health(self):
         """Current sensor health: stopped / reconfiguring / streaming / error."""
         return self._health
+
+    # ---- IMU sampler + Aim Assist (issue #15) ------------------------------
+
+    def _imu_loop(self):
+        """Sample the IMU ~10 Hz; Config Stage only, silent in Running.
+
+        Every sample lands in the shared rolling window (the ~2 s average
+        captures and the live indicator both read) and is broadcast as an
+        ``imu`` event: measured tilt (pitch/roll in the radar frame), the
+        tilt-compensated heading, and — while the aim wizard holds a
+        bisector — the signed remaining error and the ±2.5° aimed verdict.
+        A bus that dies mid-session degrades silently: one stderr line,
+        then retries at 1 Hz (an unclipped cable must never disturb the
+        stream).
+        """
+        failures = 0
+        while not self._stop.is_set():
+            if self._stage == STAGE_RUNNING:
+                time.sleep(0.2)
+                continue
+            try:
+                sample = self._imu.read()
+                pitch, roll = pitch_roll(sample['ax'], sample['ay'],
+                                         sample['az'])
+                heading = tilt_comp_heading(pitch, roll,
+                                            sample['mx'], sample['my'],
+                                            sample['mz'])
+            except Exception as exc:
+                failures += 1
+                if not self._imu_warned:
+                    self._imu_warned = True
+                    print(f'setup-tool: IMU read failed ({exc!r}) — '
+                          f'aim assist degraded', file=sys.stderr)
+                time.sleep(min(1.0, 0.1 * failures))
+                continue
+            failures = 0
+            self._imu_window.add(sample['t'], pitch, roll, heading)
+            mean = self._imu_window.mean()
+            if mean is not None:
+                self._publish_imu_event(mean)
+            time.sleep(self._imu_interval)
+
+    def _publish_imu_event(self, mean):
+        """Schedule one ``imu`` event onto the loop (IMU thread)."""
+        loop = self._loop
+        if loop is None:
+            return
+        fields = {'pitch': round(mean['pitch'], 1),
+                  'roll': round(mean['roll'], 1),
+                  'heading': round(mean['heading'], 1)}
+        aim = self._aim
+        if aim['state'] == 'aiming' and aim['bisector'] is not None:
+            error = aim_error(mean['heading'], aim['bisector'])
+            fields['aim_err'] = round(error, 2)
+            fields['aim_aimed'] = abs(error) <= AIM_BAND_DEG
+        loop.call_soon_threadsafe(self._publish_imu_now, fields)
+
+    def _publish_imu_now(self, fields):
+        """Loop-thread half of the publish — re-checks the stage so an
+        event scheduled just before a flip to Running never lands
+        (issue #15: no IMU WS events in Running Stage, period)."""
+        if self._stage == STAGE_RUNNING:
+            return
+        self._hub.publish_event('imu', **fields)
+
+    def _aim_fields(self):
+        """The current aim state as a wire payload (loop thread only)."""
+        return dict(self._aim)
+
+    def _broadcast_aim(self):
+        """Broadcast the aim state to every connected browser.
+
+        Gated to Config Stage like every other aim/imu event (issue #15:
+        the wizard is Config Stage UI; Running Stage stays IMU-silent).
+        """
+        if self._stage == STAGE_RUNNING:
+            return
+        self._hub.publish_event('aim', **self._aim_fields())
+
+    async def _send_aim(self, connection, error=None):
+        """One aim event to a single client (answers a bad request)."""
+        fields = self._aim_fields()
+        if error is not None:
+            fields['error'] = error
+        await connection.send(json.dumps({'type': 'aim', **fields},
+                                          separators=(',', ':')))
+
+    async def _handle_aim_capture(self, connection, wall):
+        """One wall capture: average the heading ~2 s, then compute.
+
+        The installer holds the case bottom flush against the wall; the
+        tool averages the tilt-compensated heading for the capture window
+        (compass σ ≈ 2.5° instantaneous, ≈ 0.5° after averaging) and
+        records that wall's inward normal. With both walls captured the
+        corner bisector falls out of the wrap-around-safe heading average
+        — valid for any corner angle, not just 90°. No compass
+        calibration anywhere: both captures share the same constant
+        distortion, so it cancels exactly.
+        """
+        if self._imu is None:
+            await self._send_aim(connection, error='no IMU detected')
+            return
+        if wall not in ('a', 'b'):
+            return
+        if self._aim['state'] == 'capturing':
+            await self._send_aim(connection,
+                                 error='a capture is already running')
+            return
+        self._aim = {**self._aim, 'state': 'capturing', 'wall': wall,
+                     'error': None}
+        self._broadcast_aim()
+        await asyncio.sleep(AIM_CAPTURE_SECONDS)
+        if self._stage == STAGE_RUNNING:
+            # A Start landed mid-capture: Running Stage is IMU-silent, so
+            # the half-finished capture is dropped and the wizard state
+            # rolls back to what the installer last had on screen.
+            self._aim = {**self._aim, 'state': 'half', 'wall': None,
+                         'error': 'capture interrupted — Stop and redo'}
+            return
+        mean = self._imu_window.mean()
+        if mean is None:
+            self._aim = {**self._aim, 'state': 'half', 'wall': None,
+                         'error': 'no IMU samples — capture failed'}
+            self._broadcast_aim()
+            return
+        capture = {'heading': round(mean['heading'], 2),
+                   'at': round(time.time(), 3)}
+        new = dict(self._aim)
+        new['wall_' + wall] = capture
+        new['wall'] = None
+        if new['wall_a'] is not None and new['wall_b'] is not None:
+            bis = bisector(new['wall_a']['heading'],
+                           new['wall_b']['heading'])
+            if bis is None:
+                new['state'] = 'half'
+                new['error'] = ('walls point opposite ways — no bisector; '
+                                'recapture a wall')
+            else:
+                new['state'] = 'aiming'
+                new['bisector'] = round(bis, 2)
+        else:
+            new['state'] = 'half'
+        self._aim = new
+        self._broadcast_aim()
+
+    async def _handle_aim_reset(self, connection):
+        """Clear the wizard (a fresh corner, or a redo from scratch)."""
+        if self._aim['state'] == 'capturing':
+            return                      # a 2 s window — let it finish
+        self._aim = _idle_aim()
+        self._broadcast_aim()
 
     # ---- serial reader thread ----------------------------------------------
 
@@ -405,6 +620,11 @@ class SetupToolHost:
             # editing lock is held — read-only view with the banner
             # (issue #14). A notice, not a reply: no ``granted`` field.
             await self._send_lock_event(connection, held=True)
+        if self._aim['state'] != 'idle' and self._stage == STAGE_CONFIG:
+            # Mid-wizard reconnect: the current aim state, so a reloaded
+            # page renders the wizard where it actually is (Config Stage
+            # only — Running Stage never hears about the IMU).
+            await self._send_aim(connection)
         sender = asyncio.create_task(self._client_send_loop(connection, queue))
         try:
             async for message in connection:
@@ -470,8 +690,10 @@ class SetupToolHost:
             return
         kind = request.get('type') if isinstance(request, dict) else None
 
-        if kind in ('config_set', 'apply') and self._stage == STAGE_RUNNING:
-            # Running Stage is read-only: the editor is a live monitor.
+        if kind in ('config_set', 'apply', 'aim_capture', 'aim_reset') \
+                and self._stage == STAGE_RUNNING:
+            # Running Stage is read-only: the editor is a live monitor,
+            # and the aim wizard (Config Stage UI) is gone with it.
             await self._send_stage_snapshot(connection, locked=True)
             return
 
@@ -506,6 +728,10 @@ class SetupToolHost:
             await self._enter_running(connection)
         elif kind == 'stop':
             await self._handle_stop(connection)
+        elif kind == 'aim_capture':
+            await self._handle_aim_capture(connection, request.get('wall'))
+        elif kind == 'aim_reset':
+            await self._handle_aim_reset(connection)
         elif kind == 'edit_begin':
             await self._handle_edit_begin(connection)
         elif kind == 'edit_end':
@@ -909,6 +1135,11 @@ def main(argv=None):
     if args.udp_host:
         udp_target = (args.udp_host, args.udp_port)
 
+    # Lazy IMU probe (issue #15): silent graceful degradation — absent
+    # chip, missing smbus2 or dead bus all mean no badge, no events, a
+    # fully functional tool.
+    imu = Mpu9150.probe()
+
     print('Lares Setup Tool')
     print(f'  Serial: {args.serial_port} @ {DATA_BAUD} baud')
     if udp_target is not None:
@@ -916,6 +1147,12 @@ def main(argv=None):
     else:
         print('  UDP (Running Stage): no server configured — frames will '
               'not be recorded')
+    if imu is not None:
+        print('  IMU: MPU9150 detected — Aim Assist and measured tilt '
+              'available')
+    else:
+        print('  IMU: not detected — Aim Assist and measured tilt '
+              'disabled (tool fully functional)')
     print()
 
     try:
@@ -925,7 +1162,8 @@ def main(argv=None):
         sys.exit(1)
 
     host = SetupToolHost(device, bind=args.bind, port=args.port,
-                         config_dir=args.data_dir, udp_target=udp_target)
+                         config_dir=args.data_dir, udp_target=udp_target,
+                         imu=imu)
     if host.boot_auto_start:
         print('Persisted Working Config found — auto-entering Running '
               'Stage (boot self-recovery).')

@@ -179,6 +179,11 @@
   body.stage-running #editor-toggle { display: none; }
   body.stage-running .stats { right: 16px; }
   body.stage-running .hint { right: 16px; }
+  /* The Aim Assist wizard and measured-tilt badge are Config Stage UI
+     (issue #15) — gone with the editor in Running Stage. */
+  body.stage-running #aim-panel,
+  body.stage-running #aim-toggle,
+  body.stage-running .imu-badge { display: none; }
 
   /* ---- tiered config editor (issue #10) ---- */
   #editor {
@@ -312,6 +317,139 @@
   .field-err { color: var(--err); font-size: 10px; grid-column: 1 / -1; }
   .fields.wide { grid-template-columns: repeat(auto-fill, minmax(58px, 1fr)); }
   .fields.wide input { padding: 3px 4px; }
+
+  /* ---- measured tilt badge (issue #15) ----
+     Appears inside the sensorPosition block once the first IMU event
+     lands; without an IMU it never exists. */
+  .imu-badge {
+    margin-top: 8px;
+    padding: 6px 10px;
+    border: 1px dashed var(--accent);
+    color: var(--ink);
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .imu-badge .val { color: var(--accent); }
+  .imu-badge button {
+    font: inherit;
+    font-size: 10px;
+    color: var(--accent);
+    background: transparent;
+    border: 1px solid var(--accent);
+    padding: 2px 8px;
+    cursor: pointer;
+  }
+  .imu-badge button:hover { filter: brightness(1.2); }
+  .imu-badge button:disabled { opacity: 0.35; cursor: default; }
+
+  /* ---- Aim Assist wizard (issue #15) ---- */
+  #aim-toggle {
+    position: fixed;
+    bottom: 16px;
+    left: 88px;
+    z-index: 11;
+    font: inherit;
+    color: var(--ink);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 2px solid var(--accent);
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  #aim-toggle:hover { border-color: var(--accent); color: var(--accent); }
+  #aim-panel {
+    position: fixed;
+    bottom: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 11;
+    width: 380px;
+    max-width: calc(100vw - 32px);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 2px solid var(--accent);
+    padding: 10px 14px 12px;
+    user-select: none;
+  }
+  #aim-panel .title {
+    color: var(--accent);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-size: 11px;
+  }
+  #aim-panel .step {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--ink);
+    margin-top: 6px;
+  }
+  #aim-panel .step .n {
+    color: var(--dim);
+    font-size: 10px;
+    letter-spacing: 0.05em;
+  }
+  #aim-panel .step button {
+    font: inherit;
+    font-size: 10px;
+    color: var(--accent);
+    background: transparent;
+    border: 1px solid var(--accent);
+    padding: 2px 10px;
+    cursor: pointer;
+  }
+  #aim-panel .step button:hover { filter: brightness(1.2); }
+  #aim-panel .step button:disabled { opacity: 0.35; cursor: default; }
+  #aim-panel .step .cap {
+    color: var(--ok);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  #aim-live {
+    margin-top: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    text-align: center;
+    font-size: 15px;
+    letter-spacing: 0.04em;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+    min-height: 34px;
+  }
+  #aim-live.aimed {
+    color: var(--ok);
+    border-color: var(--ok);
+  }
+  #aim-live.turning { color: var(--accent); }
+  #aim-panel .foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--dim);
+  }
+  #aim-panel .foot button {
+    font: inherit;
+    font-size: 10px;
+    color: var(--dim);
+    background: transparent;
+    border: 1px solid var(--line);
+    padding: 2px 10px;
+    cursor: pointer;
+  }
+  #aim-panel .foot button:hover { border-color: var(--err); color: var(--err); }
+  #aim-error {
+    color: var(--err);
+    font-size: 11px;
+    margin-top: 6px;
+  }
+  #aim-panel[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -352,6 +490,42 @@ or the track owning each point (unassociated points gray).">
 
 <div id="status" class="connecting">connecting…</div>
 <div class="hint">drag · orbit &nbsp;&nbsp; wheel · zoom</div>
+
+<!-- Aim Assist (issue #15): hidden until the first IMU event proves a
+     compass exists; the wizard lives in the Config Stage only. -->
+<button id="aim-toggle" type="button" hidden
+  title="Aim Assist: find the corner bisector from two wall captures,
+then rotate the grip until aimed. Every angle number comes from the
+sensor — no aiming by eye."
+>aim ⌖</button>
+<div id="aim-panel" hidden>
+  <div class="title">Aim Assist · corner bisector</div>
+  <div class="step"><span class="n">0</span>
+    unclip the unit from the GoPro/grip mount
+  </div>
+  <div class="step"><span class="n">1</span>
+    hold bottom flush on wall A
+    <button id="aim-cap-a" type="button">capture A</button>
+    <span class="cap" id="aim-cap-a-val"></span>
+  </div>
+  <div class="step"><span class="n">2</span>
+    hold bottom flush on wall B
+    <button id="aim-cap-b" type="button">capture B</button>
+    <span class="cap" id="aim-cap-b-val"></span>
+  </div>
+  <div class="step"><span class="n">3</span>
+    re-clip to the grip · rotate until aimed · set ~15° down by grip
+  </div>
+  <div class="step"><span class="n">4</span>
+    in the editor: sensor height by tape measure · "use measured" for tilt
+  </div>
+  <div id="aim-live">—</div>
+  <div id="aim-error"></div>
+  <div class="foot">
+    <span id="aim-bis"></span>
+    <button id="aim-reset" type="button">reset</button>
+  </div>
+</div>
 
 <button id="editor-toggle" type="button">config ⚙</button>
 <aside id="editor">

@@ -22,6 +22,13 @@
  * event). In Running Stage all edit controls are hidden entirely — the
  * page is a live monitor (cloud, overlays, tracks) with no way to touch
  * anything.
+ *
+ * Since issue #15 the page also consumes the IMU stream (Config Stage
+ * only): a measured-tilt badge beside the sensorPosition tilt fields with
+ * a one-click "use measured" (fills the DOM inputs; the Working Config
+ * stays untouched until Save/Apply), and the Aim Assist wizard — capture
+ * wall A, capture wall B, then a live turn-left/turn-right indicator with
+ * a ±2.5° aimed band. Without an IMU none of this exists.
  */
 
 // --- constants ---------------------------------------------------------
@@ -50,6 +57,13 @@ var stageReason = null;
 // read-only (or back) at the same moment, without a reload.
 var editOwned = false;
 var editHeld = false;
+
+// IMU / Aim Assist (issue #15): lastImu carries the latest averaged
+// sample (pitch/roll/heading, plus aim_err/aim_aimed while the wizard
+// holds a bisector); aimState mirrors the host's wizard. Both stay null /
+// idle forever when no IMU is present — the badge and wizard never exist.
+var lastImu = null;
+var aimState = { state: 'idle' };
 
 var framesSeen = 0;
 var fpsCounter = 0;
@@ -206,6 +220,8 @@ function connect() {
     else if (message.type === 'apply_progress') onApplyProgress(message);
     else if (message.type === 'stage') onStage(message);
     else if (message.type === 'lock') onLock(message);
+    else if (message.type === 'imu') onImu(message);
+    else if (message.type === 'aim') onAim(message);
   };
   ws.onclose = function () {
     setStatus('err', 'disconnected — retrying');
@@ -527,6 +543,7 @@ function updateStageUi(locked) {
   // owns the editing session.
   document.body.classList.toggle('stage-running', running);
   updateEditorAccess();
+  updateAimVisibility();
   if (locked) {
     setConfigStatus('err', 'config locked — Stop to edit');
   }
@@ -583,6 +600,8 @@ function releaseEditLock() {
 function setEditorEditable(editable) {
   var inputs = editorBody.querySelectorAll('input');
   for (var i = 0; i < inputs.length; i++) inputs[i].disabled = !editable;
+  var adopt = document.getElementById('imu-adopt');
+  if (adopt) adopt.disabled = !editable;
   setButtonsEnabled(editable && configSchema !== null && !applyPending);
 }
 
@@ -694,6 +713,7 @@ function renderEditor() {
 function renderParam(param) {
   var block = document.createElement('div');
   block.className = 'param';
+  block.dataset.command = param.command;   // anchor for the IMU badge
 
   var name = document.createElement('div');
   name.className = 'name';
@@ -790,6 +810,182 @@ function collectValues() {
   return values;
 }
 
+// --- IMU: measured tilt badge + Aim Assist wizard (issue #15) --------
+
+var aimToggle, aimPanel, aimLive, aimError, aimBis, aimCapAVal, aimCapBVal;
+var aimCapAButton, aimCapBButton, aimResetButton;
+var imuBadge = null;          // created once, re-mounted per editor render
+
+function wrap180Deg(deg) {
+  return (deg + 180) % 360 - 180;
+}
+
+function onImu(message) {
+  lastImu = message;
+  if (aimToggle && aimToggle.hidden && currentStage === 'config') {
+    aimToggle.hidden = false;
+  }
+  mountImuBadge();
+  updateImuBadge();
+  updateAimLive();
+}
+
+function onAim(message) {
+  aimState = message;
+  updateAimPanel();
+  updateAimLive();
+}
+
+// --- measured tilt badge -------------------------------------------------
+
+function mountImuBadge() {
+  // Appears inside the sensorPosition block once the first IMU event
+  // proves a compass exists; the editor re-renders on every config load,
+  // so the single badge node is re-mounted after each render.
+  if (!lastImu || !editorBody) return;
+  if (!imuBadge) {
+    imuBadge = document.createElement('div');
+    imuBadge.className = 'imu-badge';
+    imuBadge.id = 'imu-badge';
+    var label = document.createElement('span');
+    label.textContent = 'measured';
+    label.className = 'val';
+    var value = document.createElement('span');
+    value.id = 'imu-badge-value';
+    var adopt = document.createElement('button');
+    adopt.type = 'button';
+    adopt.id = 'imu-adopt';
+    adopt.textContent = 'use measured';
+    adopt.title = 'Fill azimuth/elevation tilt from the IMU. Elevation ' +
+      'comes from the measured pitch; azimuth from the heading against ' +
+      'the aim wizard\'s bisector (0 when aimed). The Working Config is ' +
+      'only touched by Save/Apply.';
+    adopt.addEventListener('click', useMeasuredTilt);
+    imuBadge.appendChild(label);
+    imuBadge.appendChild(value);
+    imuBadge.appendChild(adopt);
+  }
+  var hostBlock = editorBody.querySelector('.param[data-command="sensorPosition"]');
+  if (hostBlock && imuBadge.parentNode !== hostBlock) {
+    hostBlock.appendChild(imuBadge);
+  }
+}
+
+function updateImuBadge() {
+  if (!lastImu || !imuBadge) return;
+  var el = document.getElementById('imu-badge-value');
+  if (!el) return;
+  function fmt(v) {
+    return (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(1) + '°';
+  }
+  el.textContent = 'pitch ' + fmt(lastImu.pitch) +
+    ' · roll ' + fmt(lastImu.roll) +
+    ' · heading ' + Math.round(lastImu.heading) + '°';
+}
+
+function hasBisector(state) {
+  return typeof (state || {}).bisector === 'number';
+}
+
+function useMeasuredTilt() {
+  // One-click adopt: fill the DOM inputs only — no continuous auto-sync
+  // (it would fight manual correction and re-validate on every wobble).
+  // Elevation: measured pitch (nose-down positive — elev_tilt's sense).
+  // Azimuth: heading against the wizard's bisector; the sign matches
+  // overlays.js boresight() (bring-up: verify once against the TI
+  // visualizer scene, see docs/hardware/sensor-reference.md). Without a
+  // bisector there is no azimuth reference — that field is left alone.
+  // Sensor height stays manual (tape measure: the IMU is blind to
+  // height).
+  if (!lastImu || !configValues) return;
+  setFieldValue('elev_tilt', lastImu.pitch.toFixed(1));
+  var az = null;
+  if (hasBisector(aimState)) {
+    az = wrap180Deg(aimState.bisector - lastImu.heading);
+    if (Math.abs(az) > 90) {
+      // Outside the cfg field's documented ±90° range — far off aim;
+      // fill it anyway (the inline validation flags it) but say so.
+      setFieldValue('azim_tilt', az.toFixed(1));
+      setConfigStatus('err', 'azimuth ' + az.toFixed(1) +
+        '° exceeds the cfg range ±90° — re-aim closer to the bisector');
+      return;
+    }
+    setFieldValue('azim_tilt', az.toFixed(1));
+  }
+  setConfigStatus('', 'measured tilt filled (elevation' +
+    (az !== null ? ' + azimuth' : ' — no bisector yet, azimuth untouched') +
+    ') — review, then Save');
+  updateOverlayParamsFrom(collectValues());
+}
+
+function setFieldValue(key, value) {
+  var input = document.getElementById('f-sensorPosition-0-' + key);
+  if (!input) return;
+  input.value = value;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+// --- Aim Assist wizard ----------------------------------------------------
+
+function updateAimVisibility() {
+  // Config Stage UI only (issue #15): no IMU events in Running Stage,
+  // and the wizard has no business there anyway.
+  if (!aimToggle) return;
+  var running = currentStage === 'running';
+  aimToggle.hidden = running || !lastImu;
+  if (running) aimPanel.hidden = true;
+}
+
+function updateAimPanel() {
+  if (!aimPanel) return;
+  var s = aimState || { state: 'idle' };
+  var capA = s.wall_a, capB = s.wall_b;
+  aimCapAVal.textContent = capA ? capA.heading.toFixed(1) + '° ✓' : '';
+  aimCapBVal.textContent = capB ? capB.heading.toFixed(1) + '° ✓' : '';
+  aimCapAButton.disabled = s.state === 'capturing';
+  aimCapBButton.disabled = s.state === 'capturing';
+  aimBis.textContent = hasBisector(s)
+    ? 'bisector ' + s.bisector.toFixed(1) + '°' : '';
+  aimError.textContent = s.error || '';
+  if (s.state === 'capturing') {
+    aimLive.className = 'turning';
+    aimLive.textContent = 'capturing wall ' + (s.wall || '')
+      .toUpperCase() + '… hold flush, hold still';
+  }
+}
+
+function updateAimLive() {
+  if (!aimLive || !lastImu) return;
+  if (aimState.state !== 'aiming') {
+    if (aimState.state !== 'capturing') {
+      aimLive.className = '';
+      aimLive.textContent = '—';
+    }
+    return;
+  }
+  // The host sends the verdict; the panel just renders it. err > 0 means
+  // the heading is clockwise past the bisector — turn LEFT by that much.
+  if (lastImu.aim_aimed) {
+    aimLive.className = 'aimed';
+    aimLive.textContent = 'AIMED ✓ (' +
+      Math.abs(lastImu.aim_err || 0).toFixed(1) +
+      '°) — set ~15° down by grip, then "use measured" in the editor';
+  } else {
+    var err = lastImu.aim_err || 0;
+    aimLive.className = 'turning';
+    aimLive.textContent = 'TURN ' + (err > 0 ? 'LEFT' : 'RIGHT') +
+      ' ' + Math.abs(err).toFixed(1) + '°';
+  }
+}
+
+function sendAim(kind, wall) {
+  if (!wsInstance || wsInstance.readyState !== 1) return;
+  if (currentStage !== 'config') return;
+  var msg = { type: kind };
+  if (wall) msg.wall = wall;
+  wsInstance.send(JSON.stringify(msg));
+}
+
 function saveConfig() {
   if (!wsInstance || wsInstance.readyState !== 1) return;
   clearFieldErrors();
@@ -881,6 +1077,29 @@ function animate(now) {
   configStatus = document.getElementById('config-status');
   applyStatus = document.getElementById('apply-status');
   lockBanner = document.getElementById('lock-banner');
+  aimToggle = document.getElementById('aim-toggle');
+  aimPanel = document.getElementById('aim-panel');
+  aimLive = document.getElementById('aim-live');
+  aimError = document.getElementById('aim-error');
+  aimBis = document.getElementById('aim-bis');
+  aimCapAVal = document.getElementById('aim-cap-a-val');
+  aimCapBVal = document.getElementById('aim-cap-b-val');
+  aimCapAButton = document.getElementById('aim-cap-a');
+  aimCapBButton = document.getElementById('aim-cap-b');
+  aimResetButton = document.getElementById('aim-reset');
+
+  aimToggle.addEventListener('click', function () {
+    aimPanel.hidden = !aimPanel.hidden;
+  });
+  aimCapAButton.addEventListener('click', function () {
+    sendAim('aim_capture', 'a');
+  });
+  aimCapBButton.addEventListener('click', function () {
+    sendAim('aim_capture', 'b');
+  });
+  aimResetButton.addEventListener('click', function () {
+    sendAim('aim_reset');
+  });
 
   document.body.classList.add('editor-open');
   document.getElementById('editor-toggle').addEventListener('click', function () {

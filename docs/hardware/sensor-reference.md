@@ -300,3 +300,69 @@ See [`esp32-connection.md`](esp32-connection.md) for full wiring and architectur
 - UniFlash: https://www.ti.com/tool/UNIFLASH
 - Radar Toolbox: Available via TI Developer Zone Resource Explorer
 - uRAD contact: contact@urad.es
+
+---
+
+## MPU9150 IMU & Aim Assist
+
+The unit's case lid carries an **MPU9150** (accelerometer + AK8975
+compass), wired to the Pi's I2C bus 1. Probed facts (urad-pi, Pi 3B,
+unit flat on desk):
+
+- MPU9150 answers WHO_AM_I `0x68` at address `0x68`; the AK8975 answers
+  WIA `0x48` at `0x0C` behind the MPU's bypass mode.
+- The MPU is mounted **upside-down on the case lid**; axis map to the
+  radar frame: x→−x, y→y, z→−z. Verified live: flat desk reads pitch
+  +0.5°, roll −2.3°, |g| = 1.000, noise σ ≈ 0.3°.
+- Compass instantaneous noise σ ≈ 2.5° (strong but **constant** local
+  field). 2 s averaging brings it to ≈ 0.5°.
+- The radar boresight is **perpendicular to the case's two large faces**
+  (bottom/lid). Pressing the flat bottom against a wall makes the
+  boresight that wall's inward normal — no aiming skill needed at
+  contact; only flushness matters, rotation of the unit is free.
+
+**No compass calibration, ever.** The Aim Assist bisector is the
+difference of two wall-capture headings sharing the same constant local
+distortion, so static error cancels exactly. Do not add a calibration
+wizard.
+
+### Mounting assumptions (corner installs)
+
+- Vertical pole in the corner, grip head + GoPro mount at the case end
+  opposite the ports; the unit aims along the corner bisector with a
+  slight downward tilt (~15° set by grip). The pole sits behind the
+  boresight, outside the ±60° FOV.
+- The **boundary box is the room proxy** — it may intentionally batch
+  two rooms into one larger box. There is no separate room-dimension
+  input; heights stay manual (`sensorPosition` z, boundary z-max — the
+  IMU is blind to height; tape measure).
+- Future installs may keep the unit on the grip during wall captures if
+  the case face still sits flush — **flushness is the only contact
+  requirement**.
+
+### Install-time flow (Setup Tool, Config Stage)
+
+1. Unclip the unit from the GoPro/grip mount.
+2. Capture wall A: case bottom flush against wall A → the tool averages
+   the heading ~2 s. Same on wall B.
+3. The tool computes the bisector (valid for any corner angle — the math
+   averages the two headings with wrap-around handling). Live
+   turn-left/turn-right indicator with remaining error; the aimed band is
+   **±2.5°** (deliberately loose: the ±60° FOV makes a 2.5° aim error
+   irrelevant; the old bench script's ±1.5° was torture at the noise
+   level).
+4. Re-clip, rotate the grip until aimed, set ~15° downward elevation by
+   grip, then one-click **use measured** fills the `sensorPosition`
+   azim_tilt/elev_tilt fields (elevation from measured pitch, azimuth
+   from the heading against the bisector — 0 when aimed). Sensor height
+   stays manual.
+
+The IMU samples ~10 Hz in Config Stage only and is silent in Running
+Stage. If the chip is absent the Setup Tool is fully functional — badge
+hidden, no errors.
+
+**Bring-up item**: the measured-tilt → `sensorPosition` mapping
+(elevation from measured pitch, azimuth from heading against the
+bisector, sign chosen to match the page's boresight rendering in
+`overlays.js`) is to be verified **once** against the TI mmWave Demo
+Visualizer scene at manual bring-up, then trusted.

@@ -32,8 +32,14 @@ rsync -a --exclude docs_and_tools --exclude .git \
 ssh pi@<pi>
 cd /opt/lares-sense
 python3 -m venv .venv
-.venv/bin/pip install pyserial "websockets>=13"
+.venv/bin/pip install pyserial "websockets>=13" smbus2
 ```
+
+`smbus2` drives the MPU9150 on the unit's lid (Aim Assist + measured
+ tilt, [`sensor-reference.md`](sensor-reference.md#mpu9150-imu--aim-assist));
+without it — or without the chip — the Setup Tool simply runs without the
+IMU features. Enable the Pi's I2C once (`sudo raspi-config` → Interface
+Options → I2C); the chip answers on bus 1.
 
 `docs_and_tools/` (vendor SDK, ~GB) is deliberately excluded.
 
