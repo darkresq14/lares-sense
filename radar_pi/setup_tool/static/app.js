@@ -1,13 +1,18 @@
 'use strict';
 /*
- * Lares Setup Tool — staged live view + config editor (issues #9–#12).
+ * Lares Setup Tool — staged live view + config editor (issues #9–#13).
  *
  * Auto-connects to the frame WebSocket served on the same host:port as this
  * page and renders the stream with THREE.Points using preallocated typed
  * arrays: per frame we write into the existing Float32Attributes, flip
  * needsUpdate, and setDrawRange to the live point count (ADR-0004's
- * rendering pattern). Points are colored by height for a cheap sense of
- * the room's vertical extent; overlays come in later tickets.
+ * rendering pattern). On top of the cloud, the room preview overlays
+ * (issue #13, geometry from overlays.js): boundary/presence/static
+ * wireframe boxes, a sensor marker at its mount height with tilt
+ * orientation, an FOV cone, and track ID labels that follow tracked
+ * people. A color-by selector recolors points by height, SNR, doppler,
+ * or owning track. Overlays rebuild live from the editor's DOM values —
+ * every keystroke previews against the cloud, no Apply needed.
  */
 
 // --- constants ---------------------------------------------------------
@@ -15,10 +20,6 @@
 var MAX_POINTS = 2048;          // hard cap on the preallocated buffers
 var HEIGHT_RANGE = 2.5;         // meters mapped onto the color ramp
 var RECONNECT_DELAY_MS = 1000;
-
-// color ramp endpoints (deep teal -> amber), matching the page accent
-var RAMP_LOW = [64, 224, 208];
-var RAMP_HIGH = [255, 180, 84];
 
 // --- module state ------------------------------------------------------
 
@@ -88,11 +89,14 @@ function initScene() {
   grid.rotation.x = Math.PI / 2;
   scene.add(grid);
 
-  // Sensor origin marker.
-  var sensorDot = new THREE.Mesh(
-    new THREE.SphereGeometry(0.06, 12, 8),
-    new THREE.MeshBasicMaterial({ color: 0xffb454 }));
-  scene.add(sensorDot);
+  // Room preview overlays (issue #13): boxes + sensor marker + FOV cone
+  // live in one group, track ID labels in another (they update per frame,
+  // not per config edit). Contents are (re)built by rebuildOverlays() /
+  // updateTrackLabels().
+  overlayRoot = new THREE.Group();
+  scene.add(overlayRoot);
+  labelGroup = new THREE.Group();
+  scene.add(labelGroup);
 
   window.addEventListener('resize', onResize);
   initOrbit(canvas);
@@ -207,17 +211,17 @@ function onFrame(frame) {
   var n = Math.min(pts.length, MAX_POINTS);
 
   var pos = geometry.attributes.position.array;
-  var col = geometry.attributes.color.array;
   for (var i = 0; i < n; i++) {
     var p = pts[i]; // [x, y, z, doppler]
     pos[i * 3] = p[0];
     pos[i * 3 + 1] = p[1];
     pos[i * 3 + 2] = p[2];
-    heightColor(p[2], col, i * 3);
   }
   geometry.attributes.position.needsUpdate = true;
-  geometry.attributes.color.needsUpdate = true;
   geometry.setDrawRange(0, n);
+  lastFrameData = frame;
+  applyPointColors(frame);
+  updateTrackLabels(frame);
 
   statFrameEl.textContent =
     'frame ' + frame.frame_num + ' · ' + pts.length + ' pts';
@@ -226,16 +230,236 @@ function onFrame(frame) {
     ' fps';
 }
 
-function heightColor(z, out, offset) {
-  var t = clamp(z / HEIGHT_RANGE, 0, 1);
-  out[offset] = (RAMP_LOW[0] + (RAMP_HIGH[0] - RAMP_LOW[0]) * t) / 255;
-  out[offset + 1] = (RAMP_LOW[1] + (RAMP_HIGH[1] - RAMP_LOW[1]) * t) / 255;
-  out[offset + 2] = (RAMP_LOW[2] + (RAMP_HIGH[2] - RAMP_LOW[2]) * t) / 255;
-}
-
 function setStatus(cls, text) {
   statusEl.className = cls;
   statusEl.textContent = text;
+}
+
+// --- room preview overlays (issue #13) ---------------------------------
+
+var overlayRoot = null;        // THREE.Group: boxes, sensor marker, FOV cone
+var labelGroup = null;         // THREE.Group: track ID label sprites
+var overlayParams = null;      // last good readOverlayParams() result
+
+// The main room box is prominent (page accent); presence and static
+// boxes are deliberately dimmer — secondary geometry at a glance.
+var ACCENT = 0xffb454;            // matches --accent in index.html
+var ACCENT_CSS = '#ffb454';
+var DIM_TEAL = 0x3d9c90;
+var BOX_STYLES = {
+  boundary: { color: ACCENT, opacity: 0.9 },
+  presence: { color: DIM_TEAL, opacity: 0.45 },
+  staticBox: { color: 0x5c7ea8, opacity: 0.45 },
+};
+
+function wireframe(edges, color, opacity) {
+  var geo = new THREE.BufferGeometry();
+  geo.setAttribute('position',
+                   new THREE.BufferAttribute(new Float32Array(edges), 3));
+  var mat = new THREE.LineBasicMaterial({
+    color: color, transparent: opacity < 1, opacity: opacity });
+  return new THREE.LineSegments(geo, mat);
+}
+
+function sensorMarker(sensor) {
+  // A small sphere at the mount point plus a translucent cone along the
+  // boresight: together they read as "sensor, this high, tilted so".
+  var group = new THREE.Group();
+  var pos = new THREE.Vector3(0, 0, sensor.z);
+  var d = LaresOverlays.boresight(sensor.azimuth, sensor.elevation);
+  var dir = new THREE.Vector3(d[0], d[1], d[2]);
+
+  var sphere = new THREE.Mesh(
+    new THREE.SphereGeometry(0.06, 12, 8),
+    new THREE.MeshBasicMaterial({ color: ACCENT }));
+  sphere.position.copy(pos);
+  group.add(sphere);
+
+  var cone = new THREE.Mesh(
+    new THREE.ConeGeometry(0.07, 0.24, 12),
+    new THREE.MeshBasicMaterial({ color: ACCENT, transparent: true,
+                                  opacity: 0.55 }));
+  cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+  cone.position.copy(pos).addScaledVector(dir, 0.2);
+  group.add(cone);
+  return group;
+}
+
+function fovCone(params) {
+  // Range policy lives with the rest of the geometry math: overlays.js.
+  return wireframe(LaresOverlays.fovEdges(params), DIM_TEAL, 0.3);
+}
+
+function rebuildOverlays() {
+  if (!overlayRoot) return;
+  clearGroup(overlayRoot);
+  if (!overlayParams) return;
+  for (var key in BOX_STYLES) {
+    var style = BOX_STYLES[key];
+    overlayRoot.add(wireframe(LaresOverlays.boxEdges(overlayParams[key]),
+                              style.color, style.opacity));
+  }
+  overlayRoot.add(sensorMarker(overlayParams.sensor));
+  overlayRoot.add(fovCone(overlayParams));
+}
+
+function updateOverlayParamsFrom(values) {
+  // Live preview: parse the values as they currently sit in the editor
+  // (strings from the DOM are fine). A bad or half-typed set keeps the
+  // last good overlays on screen instead of flashing junk.
+  var parsed = LaresOverlays.readOverlayParams(values);
+  if (parsed) {
+    overlayParams = parsed;
+    rebuildOverlays();
+  }
+}
+
+function clearGroup(group) {
+  for (var i = group.children.length - 1; i >= 0; i--) {
+    var child = group.children[i];
+    group.remove(child);
+    disposeObject(child);
+  }
+}
+
+function disposeObject(obj) {
+  obj.traverse(function (node) {
+    if (node.geometry) node.geometry.dispose();
+    if (node.material) {
+      if (node.material.map) node.material.map.dispose();
+      node.material.dispose();
+    }
+  });
+}
+
+// --- track ID labels -----------------------------------------------------
+
+var labelPool = {};         // tid -> THREE.Sprite (visible iff tracked)
+var labelPoolOrder = [];    // insertion order, oldest evicted first
+var LABEL_POOL_MAX = 64;
+
+function drawLabel(canvas, tid) {
+  var ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = 'rgba(11, 14, 17, 0.78)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = ACCENT_CSS;
+  ctx.lineWidth = 3;
+  ctx.strokeRect(1.5, 1.5, canvas.width - 3, canvas.height - 3);
+  ctx.fillStyle = ACCENT_CSS;
+  ctx.font = 'bold 40px ui-monospace, Menlo, Consolas, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(String(tid), canvas.width / 2, canvas.height / 2 + 2);
+}
+
+function labelFor(tid) {
+  var sprite = labelPool[tid];
+  if (sprite) return sprite;
+  if (labelPoolOrder.length >= LABEL_POOL_MAX) {
+    var evict = labelPoolOrder.shift();
+    var old = labelPool[evict];
+    delete labelPool[evict];
+    if (old) {
+      labelGroup.remove(old);
+      disposeObject(old);
+    }
+  }
+  var canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 64;
+  drawLabel(canvas, tid);
+  var tex = new THREE.CanvasTexture(canvas);
+  tex.minFilter = THREE.LinearFilter;
+  sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: tex, transparent: true }));
+  sprite.scale.set(0.44, 0.22, 1);
+  labelGroup.add(sprite);
+  labelPool[tid] = sprite;
+  labelPoolOrder.push(tid);
+  return sprite;
+}
+
+function updateTrackLabels(frame) {
+  var tracks = frame.tracks || [];
+  var heights = {};
+  var th = frame.track_heights || [];
+  for (var h = 0; h < th.length; h++) heights[th[h].tid] = th[h];
+
+  var seen = {};
+  for (var i = 0; i < tracks.length; i++) {
+    var t = tracks[i];
+    var pos = t.position || [0, 0, 0];
+    var sprite = labelFor(t.tid);
+    // Hover the label over the person's head: above the tracked height
+    // extent when the height TLV is present, else above the centroid.
+    var top = heights[t.tid] ? heights[t.tid].max_z : pos[2] + 0.4;
+    sprite.position.set(pos[0], pos[1], Math.max(top + 0.25, pos[2] + 0.5));
+    sprite.visible = true;
+    seen[t.tid] = true;
+  }
+  for (var tid in labelPool) {
+    if (!seen[tid]) labelPool[tid].visible = false;
+  }
+}
+
+// --- point coloring (color-by selector) ----------------------------------
+
+var colorBy = 'height';         // 'height' | 'snr' | 'doppler' | 'track'
+var lastFrameData = null;       // kept so a selector change recolors now
+var snrMaxLive = 1;             // running max SNR, decayed per frame
+var dopplerSpanLive = 0.5;      // running max |doppler|, decayed per frame
+
+function updateColorStats(frame) {
+  // SNR arrives in dB (OOB TLV 7) or linear (people-tracking TLV 1020);
+  // a slowly-decaying running max normalizes either onto the ramp
+  // without firmware branching, and without per-frame flicker.
+  var maxSnr = 0;
+  var snr = frame.snr || [];
+  for (var i = 0; i < snr.length; i++) {
+    if (snr[i] > maxSnr) maxSnr = snr[i];
+  }
+  var maxAbsV = 0;
+  var pts = frame.points || [];
+  for (var j = 0; j < pts.length; j++) {
+    var v = Math.abs(pts[j][3]);
+    if (v > maxAbsV) maxAbsV = v;
+  }
+  snrMaxLive = Math.max(maxSnr, snrMaxLive * 0.95, 1);
+  dopplerSpanLive = Math.max(maxAbsV, dopplerSpanLive * 0.95, 0.25);
+}
+
+function pointColorInto(i, frame, out, offset) {
+  var rgb;
+  if (colorBy === 'snr') {
+    var s = frame.snr && i < frame.snr.length ? frame.snr[i] : 0;
+    rgb = LaresOverlays.rampRGB(LaresOverlays.snrT(s, snrMaxLive));
+  } else if (colorBy === 'doppler') {
+    rgb = LaresOverlays.rampRGB(
+      LaresOverlays.dopplerT(frame.points[i][3], dopplerSpanLive));
+  } else if (colorBy === 'track') {
+    // TLV 1011: per-point owning track id; 253/254/255 and missing mean
+    // unassociated — trackRGB() colors those dim gray.
+    var idx = frame.track_indexes && i < frame.track_indexes.length
+      ? frame.track_indexes[i] : null;
+    if (idx === undefined) idx = null;
+    rgb = LaresOverlays.trackRGB(idx);
+  } else {
+    rgb = LaresOverlays.rampRGB(
+      LaresOverlays.heightT(frame.points[i][2], HEIGHT_RANGE));
+  }
+  out[offset] = rgb[0];
+  out[offset + 1] = rgb[1];
+  out[offset + 2] = rgb[2];
+}
+
+function applyPointColors(frame) {
+  if (!frame || !frame.points) return;
+  updateColorStats(frame);
+  var n = Math.min(frame.points.length, MAX_POINTS);
+  var col = geometry.attributes.color.array;
+  for (var i = 0; i < n; i++) pointColorInto(i, frame, col, i * 3);
+  geometry.attributes.color.needsUpdate = true;
 }
 
 // --- two-stage machine (issue #12) -------------------------------------
@@ -308,6 +532,7 @@ function onConfig(message) {
   configValues = message.values;
   renderEditor();
   setConfigStatus('', 'loaded');
+  updateOverlayParamsFrom(configValues);
   updateStageUi(false);   // re-enables buttons/inputs iff not Running
 }
 
@@ -316,6 +541,7 @@ function onConfigSaved(message) {
   clearFieldErrors();
   setConfigStatus('ok', 'saved ✓');
   saveButton.disabled = false;
+  updateOverlayParamsFrom(configValues);
 }
 
 function onConfigRejected(message) {
@@ -586,6 +812,20 @@ function animate(now) {
   applyButton.addEventListener('click', applyConfig);
   startButton.addEventListener('click', startStage);
   stopButton.addEventListener('click', stopStage);
+
+  // Live overlay preview: every keystroke in the editor re-reads the
+  // current DOM values and rebuilds the room geometry against the live
+  // cloud — seeing the change costs nothing, Apply is only for the
+  // sensor (issue #13's no-apply preview).
+  editorBody.addEventListener('input', function () {
+    updateOverlayParamsFrom(collectValues());
+  });
+
+  var colorBySelect = document.getElementById('color-by');
+  colorBySelect.addEventListener('change', function () {
+    colorBy = colorBySelect.value;
+    applyPointColors(lastFrameData);   // recolor now, not next frame
+  });
 
   initScene();
   connect();

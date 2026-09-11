@@ -108,6 +108,29 @@
   }
   .stats .frame { color: var(--ink); }
   .stats .meta { color: var(--dim); font-size: 11px; margin-top: 2px; }
+  .stats .color-row {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .stats .color-row label {
+    color: var(--dim);
+    font-size: 11px;
+    letter-spacing: 0.05em;
+  }
+  .stats select {
+    font: inherit;
+    font-size: 11px;
+    color: var(--ink);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 0;
+    padding: 1px 4px;
+    cursor: pointer;
+  }
+  .stats select:focus { outline: none; border-color: var(--accent); }
 
   #status {
     position: fixed;
@@ -304,6 +327,16 @@ the sensor is stopped, and the editor unlocks."
 <div class="stats">
   <div class="frame" id="stat-frame">—</div>
   <div class="meta" id="stat-meta">waiting for frames</div>
+  <div class="color-row">
+    <label for="color-by">color</label>
+    <select id="color-by" title="Point coloring: height, SNR, doppler,
+or the track owning each point (unassociated points gray).">
+      <option value="height" selected>height</option>
+      <option value="snr">snr</option>
+      <option value="doppler">doppler</option>
+      <option value="track">track</option>
+    </select>
+  </div>
 </div>
 
 <div id="status" class="connecting">connecting…</div>
@@ -331,6 +364,7 @@ config channel is blind (no ACKs) — success is frames resuming on the view."
 </aside>
 
 <script src="vendor/three.min.js"></script>
+<script src="overlays.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

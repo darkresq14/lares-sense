@@ -13,7 +13,11 @@ inline validation, saved to the Pi-local Working Config. The editor's
 the full regenerated cfg → sensorStart at CLI baud, back to data baud, and
 success is inferred only from frames resuming (ADR-0001: the config channel
 has no ACK path). A frames-resumed timeout is surfaced as an explicit
-apply failure; the editor stays usable.
+apply failure; the editor stays usable. Room preview overlays (issue #13)
+— boundary/presence/static wireframe boxes, sensor marker + FOV cone,
+track ID labels, color-by — are pure front-end over this same stream
+(geometry math in ``static/overlays.js``); overlays preview live from the
+editor's DOM values.
 
 Since issue #12 the host runs the full **two-stage machine**:
 
@@ -110,6 +114,7 @@ STATIC_FILES = {
     '/': ('index.html', 'text/html; charset=utf-8'),
     '/index.html': ('index.html', 'text/html; charset=utf-8'),
     '/app.js': ('app.js', 'text/javascript; charset=utf-8'),
+    '/overlays.js': ('overlays.js', 'text/javascript; charset=utf-8'),
     '/vendor/three.min.js': ('vendor/three.min.js',
                              'text/javascript; charset=utf-8'),
 }

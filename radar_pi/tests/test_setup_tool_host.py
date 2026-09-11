@@ -149,10 +149,15 @@ class SetupToolHostTests(unittest.TestCase):
         self.assertIsNotNone(ctype)
         self.assertIn('text/html', ctype)
         self.assertIn(b'vendor/three.min.js', body)
+        self.assertIn(b'overlays.js', body)
         self.assertIn(b'app.js', body)
 
     def test_serves_page_assets(self):
         status, ctype, _ = self.http_get('/app.js')
+        self.assertEqual(status, 200)
+        self.assertIn('javascript', ctype)
+
+        status, ctype, _ = self.http_get('/overlays.js')
         self.assertEqual(status, 200)
         self.assertIn('javascript', ctype)
 
