@@ -48,6 +48,7 @@ lares-sense/
 
 | Doc | What it covers |
 |-----|----------------|
+| [`docs/hardware/e2e-test.md`](docs/hardware/e2e-test.md) | Stepwise live pipe test: PC console listener + Pi Setup Tool, no database |
 | [`docs/hardware/sensor-reference.md`](docs/hardware/sensor-reference.md) | Sensor specs, firmware, UART TLV protocol, Pi 3B UART issue, TI ecosystem |
 | [`docs/hardware/pi-setup.md`](docs/hardware/pi-setup.md) | Raspberry Pi wiring, prerequisites, step-by-step setup, troubleshooting |
 | [`docs/hardware/flashing.md`](docs/hardware/flashing.md) | Reflash firmware over USB (UniFlash): prep, GUI + headless, bench verify, troubleshooting |
