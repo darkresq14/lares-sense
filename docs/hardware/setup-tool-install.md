@@ -18,21 +18,29 @@ For bench bring-up without systemd, see the
   `sudo raspi-config` → *Interface Options* → *Serial Port* →
   login shell over serial: **No**, serial hardware enabled: **Yes**.
   Reboot, then `/dev/serial0` must exist.
-- The `pi` user can open the port (group `dialout`: `groups pi`).
+- The `darky` user can open the port (group `dialout`: `groups darky`).
 
 ## 1. Deploy the repo and the venv
 
+From the dev machine, one command does steps 1–3 of this guide
+(and later redeploys):
+
+```bash
+./deploy.sh            # optional: ./deploy.sh <ssh-host>
+```
+
+What it does under the hood:
+
 ```bash
 sudo mkdir -p /opt/lares-sense
-sudo chown pi:pi /opt/lares-sense
-# from your dev machine (or git clone on the Pi):
-rsync -a --exclude docs_and_tools --exclude .git \
-    /path/to/lares-sense/ pi@<pi>:/opt/lares-sense/
+sudo chown darky:darky /opt/lares-sense
+rsync -a --delete --exclude .git --exclude .venv --exclude docs_and_tools \
+    /path/to/lares-sense/ urad-pi:/opt/lares-sense/
 
-ssh pi@<pi>
+ssh urad-pi
 cd /opt/lares-sense
 python3 -m venv .venv
-.venv/bin/pip install pyserial "websockets>=13" smbus2
+.venv/bin/pip install -r requirements.txt
 ```
 
 `smbus2` drives the MPU9150 on the unit's lid (Aim Assist + measured
@@ -109,7 +117,7 @@ sessions, not for parking the site overnight.
 | Symptom | Check |
 |---|---|
 | Unit inactive, `ConditionPathExists=/dev/serial0` failed | Serial hardware not enabled, or sensor box unplugged. |
-| `permission denied` opening the port | `pi` not in `dialout`; serial console still on. |
+| `permission denied` opening the port | `darky` not in `dialout`; serial console still on. |
 | Page loads, "no frames resumed" on Start | Sensor not powered/flashed ([flashing](flashing.md)); check `journalctl`. |
 | No rows on the server | `LARES_UDP_HOST` unset/wrong; persister not running; firewall on UDP 5005. |
 | Wrong repo path | Adjust `WorkingDirectory`/`ExecStart` in the unit copy. |

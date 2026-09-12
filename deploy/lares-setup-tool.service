@@ -27,7 +27,7 @@ ConditionPathExists=/dev/serial0
 
 [Service]
 Type=simple
-User=pi
+User=darky
 SupplementaryGroups=dialout
 WorkingDirectory=/opt/lares-sense/radar_pi
 ExecStart=/opt/lares-sense/.venv/bin/python3 -m setup_tool.host \

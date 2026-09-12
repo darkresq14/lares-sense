@@ -1,0 +1,6 @@
+# Repo default: LF everywhere (files run on the Pi via deploy tarball).
+* text=auto eol=lf
+
+# Vendor TI configs are byte-locked to CRLF (config round-trip tests
+# reproduce the template byte-exact) — never convert.
+*.cfg -text
