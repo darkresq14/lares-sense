@@ -195,21 +195,30 @@ cd ~/lares-sense/radar_pi
 Zero output / exit after silence = sensor-side problem (power, wiring,
 firmware — see [pi-setup](pi-setup.md), [flashing](flashing.md)).
 
-Raw byte sanity check (any output at all from the sensor):
+Raw byte sanity check (any output at all from the sensor). NOTE: after a
+`sensorStop` this firmware never restarts (measured — see the
+[sensorStop wedge](sensor-reference.md#known-firmware-behavior--the-sensorstop-wedge-measured-2026-09-12));
+the check below pulses the RST line (GPIO5) first:
 
 ```bash
 ssh urad-pi "~/lares-sense/.venv/bin/python3 - <<'EOF'
 import serial, time
+from gpiozero import OutputDevice
+rst = OutputDevice(5, initial_value=True)
+rst.off(); time.sleep(0.2); rst.on(); rst.close()
+time.sleep(2.5)
 ser = serial.Serial('/dev/serial0', 115200, timeout=0.5)
-ser.reset_input_buffer()
-ser.write(b'sensorStop\n'); time.sleep(0.5)
-ser.write(b'sensorStart\n'); time.sleep(0.5)
+for line in open('/home/darky/lares-sense/radar_pi/xwr6843_aop_3d_people_track_6m.cfg'):
+    line = line.strip()
+    if not line or line.startswith('%') or line == 'sensorStop':
+        continue
+    ser.write((line + '\n').encode()); time.sleep(0.05)
 ser.close()
 ser = serial.Serial('/dev/serial0', 921600, timeout=0.5)
 t0 = time.time(); n = 0
 while time.time() - t0 < 6:
     n += len(ser.read(4096))
-print('bytes after sensorStart:', n)
+print('bytes after RST + cfg:', n)
 EOF"
 ```
 
@@ -222,6 +231,7 @@ EOF"
 | PC receiver dies instantly: `OSError: [WinError 10048]` | Another process already holds UDP 5005 (stale receiver from an earlier session) | PowerShell one-liner in Step 1 ("Port already in use?") kills the holder; then restart receiver |
 | Receiver banner but no frames | UDP blocked by Windows Firewall (Private profile inbound) or wrong `--udp-host` | Allow inbound UDP 5005 for python.exe; verify PC IP with `ipconfig` (use the 192.168.0.x one) |
 | Pi log: "no frames resumed within 15s" | Sensor not streaming | Step 0 `get_throttled`; sensor power/wiring; Plan B raw test |
+| Stop→Start on the page leaves health=error forever | Pre-2026-09-12 builds sent `sensorStop`, which wedges this firmware (see [sensor-reference](sensor-reference.md)); the sensor needs the RST pulse or a Pi reboot | Update the tool (reset-based Start/Stop, `sensor_reset.py`) and restart it |
 | `vcgencmd get_throttled` shows `0x50005` etc. | Pi undervoltage — sensor starved | Swap PSU/cable (5V/3A); re-check after fix |
 | `pkill` over ssh kills the ssh session itself (exit 255) | `pkill -f` pattern matches the ssh wrapper's own command line | Always write the pattern with a char class: `'setup_tool[.]host'` |
 | Receiver output lags or looks empty | Python stdout buffered when redirected | Run with `python -u`, or `tail -f` the log file |

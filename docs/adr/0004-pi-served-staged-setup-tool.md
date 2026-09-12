@@ -128,6 +128,33 @@ This supersedes ADR-0003's "server-served" placement; ADR-0003's transport
 - **Keep `radar_sender.py` as reader + separate web process** — two processes
   contending for one UART need an IPC seam and gain nothing.
 
+## Amendment (2026-09-12): the sensorStop wedge and the RST line
+
+Measured on the rig after stop/start broke in the field: the IWR6843AOP
+behind the uRAD single-UART adapter **never restarts after a
+`sensorStop` issued while streaming** — a bare `sensorStart`, a full
+`flushCfg` reconfig and 16 s of patience all stay silent, and since the
+config channel has no ACK path (ADR-0001), the wedge is invisible until
+frames fail to resume. This is why the original blind sequence
+(sensorStop → flushCfg → cfg → sensorStart) worked on first boot (the
+sensor was fresh, never stopped) and wedged the sensor on every
+Start/Stop after the first Stop.
+
+Recovery is a hardware reset — and the uRAD IWR-AWR adapter wires the
+sensor **RST line to Pi GPIO5** (ON/OFF to GPIO6; see
+[sensor-reference](../hardware/sensor-reference.md)), so it is a
+software operation. The host now pulses reset instead of ever sending
+`sensorStop` (`setup_tool/sensor_reset.py`):
+
+- **Start/Apply/boot auto-start**: RST pulse → boot settle (~2.5 s) →
+  flushCfg → cfg → sensorStart — deterministic from any sensor state.
+- **Stop**: the reset pulse **is** the stop (the sensor boots
+  stopped-and-clean, never wedged).
+- Without a reset line (dev machines, injected-None): the legacy
+  sensorStop sequence is kept verbatim, and its wedge is pinned by
+  `tests/test_setup_tool_reset.py` — the regression test's sensor model
+  encodes the measured firmware behavior.
+
 ## Related
 
 - [ADR-0001](0001-keep-single-uart-reader-on-pi.md) — single UART, blind config

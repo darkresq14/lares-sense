@@ -38,6 +38,9 @@ Everything learned while setting up and operating the uRAD Industrial IWR6843AoP
 - OFF (low): Functional mode (runs firmware from flash)
 - ON (high): Flashing mode (waits for firmware upload via UART)
 
+See [`flashing.md`](flashing.md) for the full step-by-step procedure (prep,
+UniFlash GUI, headless re-flash, bench verify, troubleshooting).
+
 **10-pin header pinout**:
 | Pin | Signal | Chip ball | Notes |
 |-----|--------|-----------|-------|
@@ -53,6 +56,22 @@ Everything learned while setting up and operating the uRAD Industrial IWR6843AoP
 | 10 | GPIO0 | M2 | User-programmable, unused by default firmware |
 
 **Warning**: Pins 3 and 5 are TX from the chip side, so they are RX from the host perspective. Pins 4 and 6 are RX from the chip side, so TX from the host.
+
+### Known firmware behavior — the sensorStop wedge (measured 2026-09-12)
+
+After `sensorStop` is issued **while streaming**, this sensor never starts
+again — `sensorStart`, a full `flushCfg` + cfg reconfig, even 16 s of
+patience all stay silent until a hardware reset (power cycle or the RST
+line — pin 7, wired to GPIO5 by the uRAD adapter). `sensorStop` while
+already stopped is harmless. Consequences:
+
+- The Setup Tool pulses the RST line (GPIO5) instead of ever sending
+  `sensorStop` — Start/Apply/Stop are reset-based
+  (`setup_tool/sensor_reset.py`; ADR-0004 amendment of 2026-09-12).
+- Manual poking over serial: after a `sensorStop`, pulse RST
+  (GPIO5 LOW ≥ 0.2 s → HIGH) before reconfiguring, e.g. gpiozero
+  `OutputDevice(5)` off/on.
+- A Pi reboot also heals it (the sensor power-cycles with the Pi).
 
 ---
 

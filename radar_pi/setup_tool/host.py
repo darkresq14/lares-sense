@@ -105,6 +105,7 @@ from setup_tool.imu import (
     pitch_roll,
     tilt_comp_heading,
 )
+from setup_tool.sensor_reset import RESET_BOOT_SETTLE, SensorResetLine
 from setup_tool.udp_forwarder import NullUdpForwarder, UdpForwarder
 from setup_tool.ws_hub import FrameHub
 from tlv_parser import parse_frame
@@ -136,6 +137,10 @@ APPLY_PAUSE_TIMEOUT = 5.0
 
 #: Poll cadence while an apply waits (reader parking, frames resuming).
 APPLY_POLL_INTERVAL = 0.05
+
+# --- sensor reset line (uRAD adapter RST -> GPIO5) -------------------------
+#: Default post-reset settle for the constructor (tests shrink it).
+#: See setup_tool/sensor_reset.py for why the reset line exists at all.
 
 # --- IMU / Aim Assist (issue #15) -----------------------------------------
 #: Defaults live with the math in imu.py; the constructor takes overrides
@@ -214,7 +219,9 @@ class SetupToolHost:
                  apply_frames_timeout=APPLY_FRAMES_TIMEOUT,
                  apply_command_delay=APPLY_COMMAND_DELAY,
                  imu=None, imu_sample_interval=IMU_SAMPLE_INTERVAL,
-                 imu_window_s=IMU_WINDOW_SECONDS):
+                 imu_window_s=IMU_WINDOW_SECONDS,
+                 sensor_reset=None,
+                 reset_boot_settle=RESET_BOOT_SETTLE):
         self._device = device
         self._bind = bind
         self._port = port
@@ -283,6 +290,13 @@ class SetupToolHost:
         self._imu_warned = False
         self._imu_thread = None
 
+        # Sensor reset line (uRAD RST -> GPIO5), duck-typed to
+        # pulse()/close() and injected like the device and the IMU.
+        # None = legacy blind sequence — which wedges this firmware
+        # after a Stop (see setup_tool/sensor_reset.py).
+        self._sensor_reset = sensor_reset
+        self._reset_boot_settle = reset_boot_settle
+
         # Apply coordination: the reader parks between reads while the
         # apply owns the port (writes at CLI baud, baud switches, flushes).
         self._pause_reading = threading.Event()
@@ -337,6 +351,8 @@ class SetupToolHost:
         self._udp.close()
         if self._imu is not None:
             self._imu.close()
+        if self._sensor_reset is not None:
+            self._sensor_reset.close()
 
         loop = self._loop
         shutdown = self._shutdown
@@ -982,34 +998,55 @@ class SetupToolHost:
     async def _own_port_for_config(self):
         """Own the port and write the full blind cfg sequence (shared seam).
 
-        sensorStop → flushCfg → the full regenerated cfg → sensorStart, all
-        at CLI baud, then the port back to data baud — the exact sequence
-        Apply (issue #11), Start and boot self-recovery (issue #12) run.
-        Returns the frames-parsed baseline captured **at the park point**:
-        once the reader is parked no frame can move the counter, so only
-        frames parsed after the sequence count as "resumed" — a straggler
-        parsed between the request and the park must not fake success.
+        With a reset line (the uRAD RST on GPIO5): pulse it, let the
+        sensor boot, then flushCfg → the regenerated cfg → sensorStart
+        at CLI baud, then the port back to data baud. The reset replaces
+        the sensorStop lead-in entirely — the sensor comes up stopped
+        and clean from ANY prior state, and this firmware never restarts
+        after a sensorStop issued while streaming (measured; see
+        setup_tool/sensor_reset.py), so sensorStop is never sent.
+
+        Without a reset line: the legacy sequence — sensorStop →
+        flushCfg → cfg → sensorStart — kept verbatim (and its known
+        wedge documented by tests/test_setup_tool_reset.py).
+
+        Returns the frames-parsed baseline captured **at the park
+        point**: once the reader is parked no frame can move the
+        counter, so only frames parsed after the sequence count as
+        "resumed" — a straggler parsed between the request and the
+        park must not fake success.
         Raises on device failure; callers decide how to surface it.
         """
         lines = [line + '\n' for line in cfg_command_lines(self._config_text)]
+        if self._sensor_reset is not None:
+            lines = [l for l in lines if l != 'sensorStop\n']
+            return await self._own_port_writes(lines, reset_first=True)
         return await self._own_port_writes(lines)
 
     async def _own_port_for_stop(self):
-        """Own the port just long enough to issue sensorStop (Stop's seam).
-
-        Same park/baud/restore discipline as the config sequence. The
-        returned baseline goes unused: frames after a stop mean the sensor
-        ignored it, and the reader reports those as health on its own.
+        """Own the port just long enough to stop the sensor (Stop's seam).
+        With a reset line the reset IS the stop: the sensor boots into
+        stopped-and-clean — exactly the deliberate-Stop state — and is
+        never wedged. Without one, sensorStop (which wedges this
+        firmware until the next power cycle; the next Start needs the
+        reset path to recover). Same park/baud/restore discipline as
+        the config sequence. The returned baseline goes unused: frames
+        after a stop mean the sensor ignored it, and the reader reports
+        those as health on its own.
         """
+        if self._sensor_reset is not None:
+            return await self._own_port_writes([], reset_first=True)
         return await self._own_port_writes(['sensorStop\n'])
 
-    async def _own_port_writes(self, lines):
-        """The one place that owns the port: park the reader, write at CLI
-        baud, restore data baud, let the reader resume.
+    async def _own_port_writes(self, lines, reset_first=False):
+        """The one place that owns the port: park the reader, optionally
+        pulse the sensor reset, write at CLI baud, restore data baud,
+        let the reader resume.
 
-        Pause the reader → wait for its park point → CLI baud → flush →
-        write each line (paced) → data baud → flush. A blown write still
-        puts the port back at data baud so the reader can see the sensor.
+        Pause the reader → wait for its park point → [reset pulse →
+        boot settle] → CLI baud → flush → write each line (paced) →
+        data baud → flush. A blown write still puts the port back at
+        data baud so the reader can see the sensor.
         Returns the frames-parsed baseline at the park point (see
         :meth:`_own_port_for_config`).
         """
@@ -1020,6 +1057,9 @@ class SetupToolHost:
                                    'port left untouched')
             baseline = self.frames_parsed
             try:
+                if reset_first:
+                    self._sensor_reset.pulse()
+                    await asyncio.sleep(self._reset_boot_settle)
                 self._device.baudrate = CLI_BAUD
                 self._device.reset_input_buffer()
                 for line in lines:
@@ -1135,10 +1175,13 @@ def main(argv=None):
     if args.udp_host:
         udp_target = (args.udp_host, args.udp_port)
 
-    # Lazy IMU probe (issue #15): silent graceful degradation — absent
-    # chip, missing smbus2 or dead bus all mean no badge, no events, a
-    # fully functional tool.
+    # Lazy probes (issues #15 + the reset line): silent graceful
+    # degradation — a missing piece means the tool runs without it.
+    # The reset line is the exception that matters: without it the tool
+    # still works from a fresh sensor but WEDGES this firmware after
+    # the first Stop (see setup_tool/sensor_reset.py) — say so loudly.
     imu = Mpu9150.probe()
+    sensor_reset = SensorResetLine.probe()
 
     print('Lares Setup Tool')
     print(f'  Serial: {args.serial_port} @ {DATA_BAUD} baud')
@@ -1153,6 +1196,13 @@ def main(argv=None):
     else:
         print('  IMU: not detected — Aim Assist and measured tilt '
               'disabled (tool fully functional)')
+    if sensor_reset is not None:
+        print('  Sensor reset: GPIO5 (uRAD RST line) — Start/Stop pulse '
+              'a hardware reset, never sensorStop')
+    else:
+        print('  Sensor reset: not available — Start/Stop fall back to '
+              'the sensorStop sequence, which wedges this firmware '
+              'after a Stop until power cycle', file=sys.stderr)
     print()
 
     try:
@@ -1163,7 +1213,7 @@ def main(argv=None):
 
     host = SetupToolHost(device, bind=args.bind, port=args.port,
                          config_dir=args.data_dir, udp_target=udp_target,
-                         imu=imu)
+                         imu=imu, sensor_reset=sensor_reset)
     if host.boot_auto_start:
         print('Persisted Working Config found — auto-entering Running '
               'Stage (boot self-recovery).')
