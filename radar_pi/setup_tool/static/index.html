@@ -269,6 +269,10 @@
     cursor: pointer;
   }
   body.editor-open #editor-toggle { right: 412px; }
+  /* Closing must actually hide the drawer — without this the toggle only
+     slid the button/stats/hint back to the corner, on top of the still-
+     visible editor (seen live 2026-02 e2e session). */
+  body:not(.editor-open) #editor { display: none; }
   #editor .body { overflow-y: auto; flex: 1; padding-bottom: 32px; }
   .tier { padding: 12px 16px 4px; }
   .tier h2 {
