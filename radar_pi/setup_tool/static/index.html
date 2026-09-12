@@ -30,10 +30,40 @@
   #view { position: fixed; inset: 0; display: block; cursor: grab; }
   #view:active { cursor: grabbing; }
 
-  .hud {
+  /* ---- HUD overlay: one flex scaffold, corner panels are flex
+     children (issue #16 fix). Fixed corner offsets stacked
+     #editor-toggle on .stats and #aim-toggle on #status — flex
+     siblings can never overlap, they push each other and wrap. */
+  #overlay {
     position: fixed;
-    top: 16px;
-    left: 16px;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 16px;
+    pointer-events: none;   /* the gaps stay canvas-draggable */
+    z-index: 5;
+  }
+  .ov-top, .ov-bottom {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;        /* too narrow: wrap, never overlap */
+  }
+  .ov-top { align-items: flex-start; }
+  .ov-bottom { align-items: flex-end; }
+  .ov-top > *, .ov-bottom > * { pointer-events: auto; }
+  .ov-group {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  /* The 396px editor drawer + 16px breathing room: corner panels
+     yield the right edge while the drawer is open. */
+  body.editor-open:not(.stage-running) #overlay { padding-right: 412px; }
+
+  .hud {
     padding: 10px 14px;
     background: var(--panel);
     border: 1px solid var(--line);
@@ -96,9 +126,6 @@
   #health-line.err { color: var(--err); }
 
   .stats {
-    position: fixed;
-    top: 16px;
-    right: 16px;
     padding: 10px 14px;
     background: var(--panel);
     border: 1px solid var(--line);
@@ -133,9 +160,6 @@
   .stats select:focus { outline: none; border-color: var(--accent); }
 
   #status {
-    position: fixed;
-    bottom: 16px;
-    left: 16px;
     padding: 6px 12px;
     background: var(--panel);
     border: 1px solid var(--line);
@@ -159,9 +183,6 @@
   @keyframes pulse { 50% { opacity: 0.25; } }
 
   .hint {
-    position: fixed;
-    bottom: 16px;
-    right: 16px;
     color: var(--dim);
     font-size: 11px;
     background: var(--panel);
@@ -169,16 +190,13 @@
     padding: 6px 12px;
     user-select: none;
   }
-  body.editor-open .stats { right: 412px; }
-  body.editor-open .hint { right: 412px; }
+  /* Drawer clears the corner panels via the #overlay padding rule
+     above — no per-element corner offsets to keep in sync. */
 
-  /* ---- read-only monitor (issue #14) ----
-     Running Stage hides the edit controls entirely: the page is a live
+  /* Running Stage: read-only monitor — the page is a live
      monitor (cloud, overlays, tracks) anyone on the LAN can watch. */
   body.stage-running #editor,
   body.stage-running #editor-toggle { display: none; }
-  body.stage-running .stats { right: 16px; }
-  body.stage-running .hint { right: 16px; }
   /* The Aim Assist wizard and measured-tilt badge are Config Stage UI
      (issue #15) — gone with the editor in Running Stage. */
   body.stage-running #aim-panel,
@@ -256,10 +274,6 @@
      while this one is a read-only view. Text set by JS per cause. */
   body.edit-locked #lock-banner { display: block; }
   #editor-toggle {
-    position: fixed;
-    top: 16px;
-    right: 16px;
-    z-index: 11;
     font: inherit;
     color: var(--ink);
     background: var(--panel);
@@ -268,7 +282,6 @@
     padding: 6px 12px;
     cursor: pointer;
   }
-  body.editor-open #editor-toggle { right: 412px; }
   /* Closing must actually hide the drawer — without this the toggle only
      slid the button/stats/hint back to the corner, on top of the still-
      visible editor (seen live 2026-02 e2e session). */
@@ -352,10 +365,6 @@
 
   /* ---- Aim Assist wizard (issue #15) ---- */
   #aim-toggle {
-    position: fixed;
-    bottom: 16px;
-    left: 88px;
-    z-index: 11;
     font: inherit;
     color: var(--ink);
     background: var(--panel);
@@ -366,13 +375,10 @@
   }
   #aim-toggle:hover { border-color: var(--accent); color: var(--accent); }
   #aim-panel {
-    position: fixed;
-    bottom: 16px;
-    left: 50%;
-    transform: translateX(-50%);
     z-index: 11;
     width: 380px;
-    max-width: calc(100vw - 32px);
+    max-width: 100%;
+    margin: 0 auto;          /* centered between its flex siblings */
     background: var(--panel);
     border: 1px solid var(--line);
     border-left: 2px solid var(--accent);
@@ -459,79 +465,89 @@
 <body>
 <canvas id="view"></canvas>
 
-<div class="hud">
-  <div class="title">Lares Setup Tool</div>
-  <div class="subtitle">live point cloud · staged</div>
-  <div class="stage-row">
-    <span id="stage-line">config stage</span>
-    <button id="start" type="button" disabled
-      title="Start applies the Working Config and enters Running Stage: the
+<!-- Corner HUD lives in one flex scaffold (fix for the overlapping
+     fixed-position corner panels): siblings push and wrap instead of
+     stacking on top of each other. -->
+<div id="overlay">
+  <div class="ov-top">
+    <div class="hud">
+      <div class="title">Lares Setup Tool</div>
+      <div class="subtitle">live point cloud · staged</div>
+      <div class="stage-row">
+        <span id="stage-line">config stage</span>
+        <button id="start" type="button" disabled
+          title="Start applies the Working Config and enters Running Stage: the
 sensor streams, frames go to the browsers AND the recording server, and the
 config becomes read-only."
-    >Start</button>
-    <button id="stop" type="button" disabled
-      title="Stop returns to Config Stage: UDP to the server is suppressed,
+        >Start</button>
+        <button id="stop" type="button" disabled
+          title="Stop returns to Config Stage: UDP to the server is suppressed,
 the sensor is stopped, and the editor unlocks."
-    >Stop</button>
-  </div>
-  <div id="health-line">sensor stopped</div>
-</div>
-
-<div class="stats">
-  <div class="frame" id="stat-frame">—</div>
-  <div class="meta" id="stat-meta">waiting for frames</div>
-  <div class="color-row">
-    <label for="color-by">color</label>
-    <select id="color-by" title="Point coloring: height, SNR, doppler,
+        >Stop</button>
+      </div>
+      <div id="health-line">sensor stopped</div>
+    </div>
+    <div class="ov-group">
+      <div class="stats">
+        <div class="frame" id="stat-frame">—</div>
+        <div class="meta" id="stat-meta">waiting for frames</div>
+        <div class="color-row">
+          <label for="color-by">color</label>
+          <select id="color-by" title="Point coloring: height, SNR, doppler,
 or the track owning each point (unassociated points gray).">
-      <option value="height" selected>height</option>
-      <option value="snr">snr</option>
-      <option value="doppler">doppler</option>
-      <option value="track">track</option>
-    </select>
+            <option value="height" selected>height</option>
+            <option value="snr">snr</option>
+            <option value="doppler">doppler</option>
+            <option value="track">track</option>
+          </select>
+        </div>
+      </div>
+      <button id="editor-toggle" type="button">config ⚙</button>
+    </div>
   </div>
-</div>
 
-<div id="status" class="connecting">connecting…</div>
-<div class="hint">drag · orbit &nbsp;&nbsp; wheel · zoom</div>
-
-<!-- Aim Assist (issue #15): hidden until the first IMU event proves a
-     compass exists; the wizard lives in the Config Stage only. -->
-<button id="aim-toggle" type="button" hidden
-  title="Aim Assist: find the corner bisector from two wall captures,
+  <div class="ov-bottom">
+    <div class="ov-group">
+      <div id="status" class="connecting">connecting…</div>
+      <!-- Aim Assist (issue #15): hidden until the first IMU event proves a
+           compass exists; the wizard lives in the Config Stage only. -->
+      <button id="aim-toggle" type="button" hidden
+        title="Aim Assist: find the corner bisector from two wall captures,
 then rotate the grip until aimed. Every angle number comes from the
 sensor — no aiming by eye."
->aim ⌖</button>
-<div id="aim-panel" hidden>
-  <div class="title">Aim Assist · corner bisector</div>
-  <div class="step"><span class="n">0</span>
-    unclip the unit from the GoPro/grip mount
-  </div>
-  <div class="step"><span class="n">1</span>
-    hold bottom flush on wall A
-    <button id="aim-cap-a" type="button">capture A</button>
-    <span class="cap" id="aim-cap-a-val"></span>
-  </div>
-  <div class="step"><span class="n">2</span>
-    hold bottom flush on wall B
-    <button id="aim-cap-b" type="button">capture B</button>
-    <span class="cap" id="aim-cap-b-val"></span>
-  </div>
-  <div class="step"><span class="n">3</span>
-    re-clip to the grip · rotate until aimed · set ~15° down by grip
-  </div>
-  <div class="step"><span class="n">4</span>
-    in the editor: sensor height by tape measure · "use measured" for tilt
-  </div>
-  <div id="aim-live">—</div>
-  <div id="aim-error"></div>
-  <div class="foot">
-    <span id="aim-bis"></span>
-    <button id="aim-reset" type="button">reset</button>
+      >aim ⌖</button>
+    </div>
+    <div id="aim-panel" hidden>
+      <div class="title">Aim Assist · corner bisector</div>
+      <div class="step"><span class="n">0</span>
+        unclip the unit from the GoPro/grip mount
+      </div>
+      <div class="step"><span class="n">1</span>
+        hold bottom flush on wall A
+        <button id="aim-cap-a" type="button">capture A</button>
+        <span class="cap" id="aim-cap-a-val"></span>
+      </div>
+      <div class="step"><span class="n">2</span>
+        hold bottom flush on wall B
+        <button id="aim-cap-b" type="button">capture B</button>
+        <span class="cap" id="aim-cap-b-val"></span>
+      </div>
+      <div class="step"><span class="n">3</span>
+        re-clip to the grip · rotate until aimed · set ~15° down by grip
+      </div>
+      <div class="step"><span class="n">4</span>
+        in the editor: sensor height by tape measure · "use measured" for tilt
+      </div>
+      <div id="aim-live">—</div>
+      <div id="aim-error"></div>
+      <div class="foot">
+        <span id="aim-bis"></span>
+        <button id="aim-reset" type="button">reset</button>
+      </div>
+    </div>
+    <div class="hint">drag · orbit &nbsp;&nbsp; wheel · zoom</div>
   </div>
 </div>
-
-<button id="editor-toggle" type="button">config ⚙</button>
 <aside id="editor">
   <header>
     <div class="title">Sensor configuration</div>
