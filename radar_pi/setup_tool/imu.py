@@ -229,6 +229,14 @@ class Mpu9150:
             if bus.read_byte_data(MPU_ADDR, 0x75) != MPU_WHO_AM_I:
                 bus.close()
                 return None
+            # The compass only answers once the MPU is awake and its aux
+            # bus is in bypass. A fresh power-up sits in SLEEP with bypass
+            # off — a read at 0x0C then fails (Errno 121) and probe()
+            # would miss a perfectly healthy chip. Same writes as
+            # __init__ (idempotent); found live on urad-pi after a power
+            # cycle: WHO_AM_I answered, WIA did not.
+            bus.write_byte_data(MPU_ADDR, REG_PWR_MGMT_1, 0x00)
+            bus.write_byte_data(MPU_ADDR, REG_INT_PIN_CFG, BYPASS_ENABLE)
             if bus.read_byte_data(AK8975_ADDR, REG_WIA) != AK8975_WIA:
                 bus.close()
                 return None
