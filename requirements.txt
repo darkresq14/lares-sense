@@ -1,0 +1,6 @@
+# Setup Tool runtime deps on the Pi (see deploy.sh, docs/hardware/setup-tool-install.md)
+pyserial
+websockets>=13
+smbus2
+gpiozero          # sensor RST line (Start/Stop hard reset, ADR-0004 amendment);
+                  # no pin backend needed: gpiozero's NativeFactory drives /dev/gpiomem

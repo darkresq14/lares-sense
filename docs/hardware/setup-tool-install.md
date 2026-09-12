@@ -25,22 +25,33 @@ For bench bring-up without systemd, see the
 From the dev machine, one command does steps 1–3 of this guide
 (and later redeploys):
 
-```bash
-./deploy.sh            # optional: ./deploy.sh <ssh-host>
-```
+- **Windows PowerShell**: `.\deploy.ps1`
+- **Git Bash / Linux / macOS**: `./deploy.sh`
 
-What it does under the hood:
+Both are the same flow: pack the source into a tarball (excluding `.git`,
+`.venv`, `docs_and_tools/`), scp it to the Pi, extract, then run
+`deploy/on-pi-install.sh` on the Pi as root, which:
+
+- swaps the new tree into `/opt/lares-sense` (previous generation kept in
+  `.previous/` for instant rollback; `.venv` survives every deploy),
+- creates/updates the venv and installs `requirements.txt`,
+- installs the systemd unit and (first run only) writes
+  `/etc/default/lares-setup-tool` and migrates an existing Working Config
+  into `/var/lib/lares/setup_tool/`,
+- restarts the service and prints its status + last log lines.
+
+Manual equivalent, if you ever need it:
 
 ```bash
 sudo mkdir -p /opt/lares-sense
 sudo chown darky:darky /opt/lares-sense
-rsync -a --delete --exclude .git --exclude .venv --exclude docs_and_tools \
-    /path/to/lares-sense/ urad-pi:/opt/lares-sense/
-
+tar -czf /tmp/lares.tgz --exclude=.git --exclude=.venv \
+    --exclude=docs_and_tools .
+scp /tmp/lares.tgz urad-pi:/tmp/
+ssh urad-pi "mkdir -p /opt/lares-sense/incoming && \
+    tar -xzf /tmp/lares.tgz -C /opt/lares-sense/incoming"
 ssh urad-pi
-cd /opt/lares-sense
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+sudo bash /opt/lares-sense/incoming/deploy/on-pi-install.sh
 ```
 
 `smbus2` drives the MPU9150 on the unit's lid (Aim Assist + measured
@@ -127,5 +138,7 @@ sessions, not for parking the site overnight.
 | Path | Role |
 |---|---|
 | `deploy/lares-setup-tool.service` | the systemd unit (copy to `/etc/systemd/system/`) |
+| `deploy.sh` / `deploy.ps1` | one-command deploy from the dev machine (bash / PowerShell) |
+| `deploy/on-pi-install.sh` | runs on the Pi as root: tree swap, venv, unit, restart |
 | `/etc/default/lares-setup-tool` | env file: `LARES_UDP_HOST`, `LARES_UDP_PORT` |
 | `/var/lib/lares/setup_tool/` | persisted Working Config (systemd `StateDirectory`) |
