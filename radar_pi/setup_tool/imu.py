@@ -3,12 +3,18 @@
 MPU9150 IMU module for the Setup Tool (issue #15).
 
 The unit's case lid carries an MPU9150 (accelerometer + AK8975 compass)
-mounted **upside-down**: the probed axis map from raw chip axes to the
-radar frame is x→−x, y→y, z→−z (verified live on urad-pi: unit flat on
-the desk reads pitch +0.5°, roll −2.3°, |g| = 1.000). The radar boresight
-is perpendicular to the case's two large faces, so pressing the flat
-bottom flush against a wall makes the boresight that wall's inward normal
-— no aiming skill at the wall, only flushness.
+mounted **flat on the lid, upside-down**: its PCB is parallel to the lid
+and chip +z points into the case, so the radar boresight — out through
+the lid, perpendicular to the case's large faces — is along chip −z. The
+math below speaks the tool frame (x right, y the boresight, z up when
+aimed), so :func:`apply_axis_map` rotates chip→tool: x→x, y→−z, z→−y.
+The desk probe on urad-pi pins the z sign: unit flat on the desk, lid
+up, reads raw accel (0, 0, −1 g), |g| = 1.000 — and under the fixed map
+that pose correctly reads pitch −90 (the beam points at the ceiling);
+the earlier "reads level flat on desk" observation was the frame bug's
+signature, not a verification. Pressing the flat bottom flush against a
+wall makes the boresight that wall's inward normal — no aiming skill at
+the wall, only flushness.
 
 Three layers, no cross-dependencies:
 
@@ -70,11 +76,21 @@ IMU_WINDOW_SECONDS = 2.0      #: averaging window — σ ≈ 2.5° → ≈ 0.5°
 AIM_CAPTURE_SECONDS = 2.0     #: hold-flush averaging window per wall
 AIM_BAND_DEG = 2.5            #: "aimed" band — ±60° FOV makes it irrelevant
 
-#: Axis map, lid upside-down: raw chip axes -> radar frame (x→−x, y→y,
-#: z→−z; probe-verified on urad-pi, see module docstring).
+#: Axis map, lid mount: raw chip axes -> tool frame. The chip lies flat on
+#: the lid upside-down (PCB parallel to the lid, +z into the case), so the
+#: boresight out the lid is chip −z; the map makes it the tool's +y. One
+#: more trap: the tool triple (x right, y forward, z up) is LEFT-handed
+#: (right × forward = down), while the chip's axes are right-handed — so
+#: the map must flip a sign, not just permute: x→x, y→−z, z→−y. Get this
+#: backwards and every heading reads mirrored (azimuth → −azimuth, mod
+#: 360) — spin-stable but 2θ off true. The z sign is pinned by the desk
+#: probe: flat on the desk, lid up, raw accel (0, 0, −1 g), |g| = 1.000
+#: (urad-pi). The map is an involution (its own inverse). The remaining
+#: freedom — the chip's in-plane rotation on the lid — cancels in
+#: pitch/heading math (it is a roll offset; see test_imu_physical_frame).
 def apply_axis_map(x, y, z):
-    """Map raw chip axes into the radar frame (lid upside-down flips)."""
-    return -x, y, -z
+    """Map raw chip axes into the tool frame (boresight = tool +y)."""
+    return x, -z, -y
 
 
 def circular_mean(headings):

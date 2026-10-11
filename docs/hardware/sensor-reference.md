@@ -330,9 +330,17 @@ unit flat on desk):
 
 - MPU9150 answers WHO_AM_I `0x68` at address `0x68`; the AK8975 answers
   WIA `0x48` at `0x0C` behind the MPU's bypass mode.
-- The MPU is mounted **upside-down on the case lid**; axis map to the
-  radar frame: x→−x, y→y, z→−z. Verified live: flat desk reads pitch
-  +0.5°, roll −2.3°, |g| = 1.000, noise σ ≈ 0.3°.
+- The MPU is mounted **flat on the case lid, upside-down** — PCB parallel
+  to the lid, chip +z into the case — so the boresight out the lid is
+  chip −z. The chip→tool axis map is x→x, y→−z, z→−y: it puts the
+  boresight on the math's +y, and flips a sign because the tool triple
+  (x right, y forward, z up) is left-handed while the chip's axes are
+  right-handed — a sign-only flip mirrors every heading (azimuth →
+  −azimuth). Desk probe (urad-pi): flat on the desk, lid up, raw accel
+  (0, 0, −1 g), |g| = 1.000 — the vector that pins the map's z sign.
+  Under the fixed map that pose correctly reads pitch −90 (beam at the
+  ceiling); the earlier "flat desk reads level" observation was the
+  frame bug's signature, not a verification. Accel noise σ ≈ 0.3°.
 - Compass instantaneous noise σ ≈ 2.5° (strong but **constant** local
   field). 2 s averaging brings it to ≈ 0.5°.
 - The radar boresight is **perpendicular to the case's two large faces**

@@ -4,7 +4,9 @@ Seam tests for the IMU module, Aim Assist wizard and measured tilt
 (issue #15).
 
 The unit's lid carries an MPU9150 (accel + AK8975 behind bypass) mounted
-upside-down; the Setup Tool host samples it ~10 Hz in Config Stage only
+flat on the lid, upside-down (chip +z into the case — the boresight out
+the lid is chip −z, which apply_axis_map rotates onto the tool's +y);
+the Setup Tool host samples it ~10 Hz in Config Stage only
 (silent in Running Stage), publishes measured tilt + tilt-compensated
 heading as ``imu`` events, and runs the Aim Assist wizard: two ~2 s wall
 captures -> the corner bisector (wrap-around-safe, any corner angle) ->
@@ -15,9 +17,10 @@ boundaries: a fake I2C bus (the smbus2 slice the driver uses) feeds
 synthetic accel/mag vectors through the real :class:`Mpu9150` driver into
 the real host, and real loopback WS clients assert the events. The pure
 math (tilt, tilt-compensation, bisector) is additionally exercised
-directly with known vectors — including the probe-verified desk-pose
-vectors recorded on urad-pi (flat desk: pitch ≈ 0, roll ≈ 0, |g| = 1.000
-after the axis map).
+directly with known vectors — including the probe-recorded desk vector
+(flat desk, lid up: raw accel (0, 0, −1 g), |g| = 1.000 — the vector
+that pins the axis map's z sign; see test_imu_physical_frame for the
+physical-mounting invariants that keep the map honest).
 
 Run from the radar_pi/ directory:
 
@@ -173,16 +176,18 @@ class FakeI2CBus:
 
 class ImuMathTests(unittest.TestCase):
 
-    def test_desk_pose_vectors_read_level(self):
-        """The probe-verified desk pose: unit flat on the desk (lid up),
-        raw chip accel ≈ (0, 0, −1 g) — upside-down lid. After the axis
-        map the tilt is ≈ 0/0 and |g| = 1 (urad-pi read +0.5°/−2.3° —
-        that recorded tilt is the desk's own, asserted below through the
-        host seam)."""
+    def test_desk_pose_vectors_read_nose_up_90(self):
+        """The probe-recorded desk vector: unit flat on the desk (lid up),
+        raw chip accel ≈ (0, 0, −1 g) — chip z into the case. This is the
+        vector that pins the axis map's z sign. Under the tool frame the
+        pose is 90° nose-up (the boresight points at the ceiling; roll is
+        undefined at that gimbal, so only pitch is asserted). The old
+        assertion here — tilt ≈ 0/0, "verified live" — encoded the frame
+        bug: it made apply_axis_map self-confirming instead of testing
+        the physical mounting (which test_imu_physical_frame now does)."""
         ax, ay, az = apply_axis_map(0.0, 0.0, -1.0)
         pitch, roll = pitch_roll(ax, ay, az)
-        self.assertAlmostEqual(pitch, 0.0, places=6)
-        self.assertAlmostEqual(roll, 0.0, places=6)
+        self.assertAlmostEqual(pitch, -90.0, places=6)
         self.assertAlmostEqual(math.hypot(ax, ay, az), 1.0, places=6)
 
     def test_pitch_roll_recover_known_tilts(self):
