@@ -341,17 +341,29 @@ unit flat on desk):
   Under the fixed map that pose correctly reads pitch −90 (beam at the
   ceiling); the earlier "flat desk reads level" observation was the
   frame bug's signature, not a verification. Accel noise σ ≈ 0.3°.
-- The **AK8975's y register is inverted relative to the accel die** in
-  the same MPU9150 package (probed live 2026-10-11: with the shared map
-  the de-rolled field scattered 30 µT through a roll sweep and wall
-  headings wandered up to 126°; with the compass-specific map,
-  10 µT / 26°). The mag chip→tool map is x→x, y→−z, z→+y
-  (`apply_mag_axis_map`); the accel keeps x→x, y→−z, z→−y.
-- **Hard-iron bias ~10 µT as worn** (the unit plus the installer's
-  watch — probed with sweeps 2026-10-11; the ring is gold, negligible).
-  It is body-fixed but grip-unstable (b_z measured +5.5 vs −11.6 µT
-  across two holds), so it is **not** baked as a constant: a wrong
-  baked bias helps some grips and hurts others.
+- The **AK8975 compass die is flipped 180° about x** relative to the
+  accel die in the same MPU9150 package. Established by full-turn wall
+  sweeps on urad-pi (2026-10-11): through a flush sweep the field's
+  component along the boresight register (chip z) stays constant while
+  the other two circle — the circle's plane names the die's axes — and
+  a bias-aware joint fit over five live sessions picks the flipped map
+  at 9.0 µT rms vs 15.4 µT for the unflipped one. The mag chip→tool map
+  is the pure swap x→x, y→z, z→y (`apply_mag_axis_map`); the accel
+  keeps x→x, y→−z, z→−y. A missed flip **mirrors every azimuth**
+  (h → 180° − h): live, aim guidance ended 180° out with left/right
+  inverted — and wall captures near azimuth ~270°, the mirror's fixed
+  point, deceptively looked fine (that is how two wrong maps shipped).
+  Real-sample pins live in `radar_pi/tests/test_imu_live_replay.py`;
+  synthetic-frame tests cannot catch this (any model+map pair that
+  composes to the same tool frame passes). Residual die in-plane
+  rotation ≈5° and soft-iron (~8 µT) remain, inside the ±10° floor.
+- **Hard-iron bias as worn is grip-unstable and larger than first
+  measured** (the unit plus the installer's watch; the ring is gold,
+  negligible). Full-turn sweeps 2026-10-11: the bias's constant axis
+  drifted +40 µT during one 20 s "still" hold, and per-hold fits range
+  |b| ≈ 10–20 µT. It is body-fixed only within a grip, so it is **not**
+  baked as a constant: a wrong baked bias helps some grips and hurts
+  others. The sweep capture is what tolerates it (next paragraph).
 - The desk area carries a strong environmental field (|B| 82–119 µT vs
   ~36–43 µT in air) — wall captures away from the desk.
 - Compass instantaneous noise σ ≈ 2.5°. 2 s averaging brings it to

@@ -102,16 +102,24 @@ def apply_axis_map(x, y, z):
     return x, -z, -y
 
 
-#: The AK8975 compass die reports its z axis INVERTED relative to the
-#: accel die in the same MPU9150 package (probe-verified live on urad-pi,
-#: 2026-10-11: with the shared map the de-rolled field scattered 30 uT
-#: through a roll sweep and wall headings wandered up to 126 deg; with
-#: the z flip, 10 uT and 26 deg — see docs/hardware/sensor-reference.md).
-#: Same lid geometry as the accel map, so it composes with the sign flip:
-#: chip -> tool for the magnetometer is x->x, y->-z, z->+y.
+#: The AK8975 compass die sits FLIPPED 180° about x relative to the accel
+#: die in the same MPU9150 package. Full-turn wall sweeps on urad-pi
+#: (2026-10-11) proved its z register still reads the boresight — through
+#: a flush sweep only the shared-map y component (chip z) stays constant
+#: while the other two circle; a bias-aware joint fit over five live
+#: sessions picks the flipped map at 9.0 µT rms vs 15.4 for the unflipped
+#: one; and with it, same-wall readings agree across poses, grips and
+#: sessions to 2.0° (fixtures in tests/test_imu_live_replay.py). The undo
+#: is the pure swap x->x, y->z, z->y — det −1, the same handedness fix
+#: the accel map carries. A missed flip MIRRORS every azimuth
+#: (h -> 180 − h): live, aim guidance ended 180° out with left/right
+#: inverted, while wall captures near azimuth ~270° — the mirror's fixed
+#: point — deceptively looked fine. Residual ~5° in-plane die rotation
+#: and soft-iron (~8 µT) sit inside the ±10° as-worn accuracy floor
+#: (docs/hardware/sensor-reference.md).
 def apply_mag_axis_map(x, y, z):
-    """Map raw AK8975 axes into the tool frame (z inverted vs the accel)."""
-    return x, -z, y
+    """Map raw AK8975 axes into the tool frame (die flipped about x)."""
+    return x, z, y
 
 
 def circular_mean(headings):

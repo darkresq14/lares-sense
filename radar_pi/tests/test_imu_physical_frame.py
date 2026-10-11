@@ -91,15 +91,18 @@ def _chip_axes(boresight, spin_deg):
 def _pose_samples(boresight, spin_deg, dip_deg=65.0):
     """Raw chip-frame accel (g) + mag (arb) for a posed unit.
 
-    The AK8975 reports its y register INVERTED relative to the accel die
-    in the same MPU9150 package (probe-verified live, 2026-10-11); the
-    driver's apply_mag_axis_map undoes exactly that.
+    The AK8975 die is FLIPPED 180° about x relative to the accel die in
+    the same MPU9150 package (live-replay-verified, 2026-10-11); the
+    driver's apply_mag_axis_map undoes exactly that. Note the trap this
+    file cannot escape: the (model, map) pair composes to the same tool
+    frame either way, so a wrong flip here ships green — the real-data
+    oracle lives in tests/test_imu_live_replay.py.
     """
     axes = _chip_axes(boresight, spin_deg)
     accel = tuple(_dot(_UP, a) for a in axes)          # +1g on the up axis
     field = (math.cos(math.radians(dip_deg)), 0.0,
              -math.sin(math.radians(dip_deg)))          # dip down, N-ward
-    mag = (_dot(field, axes[0]), -_dot(field, axes[1]), _dot(field, axes[2]))
+    mag = (_dot(field, axes[0]), -_dot(field, axes[1]), -_dot(field, axes[2]))
     return accel, mag
 
 
@@ -181,18 +184,21 @@ class WallCaptureInvariance(unittest.TestCase):
                                            f'(err {err:.1f}°)')
 
     def test_boresight_bias_survives_sweeps_documented_limit(self):
-        """The accuracy floor, pinned: a bias along the boresight (chip z)
-        is invisible to wall-plane rotation — the swept capture keeps the
-        exact atan2 shift it causes. Not an estimator bug; geometry. As
-        worn this is the ~±10° limit of the hand-held method; the fix is
-        procedure (captures with the non-watch hand), not code."""
+        """The accuracy floor, pinned: a bias along the boresight (chip z
+        — the boresight register for BOTH dies) is invisible to wall-plane
+        rotation — the swept capture keeps the exact atan2 shift it causes.
+        Not an estimator bug; geometry. As worn this is the ~±10° limit of
+        the hand-held method; the fix is procedure (captures with the
+        non-watch hand), not code."""
         bias = (0.0, 0.0, 0.12)
         for theta in (0.0, 214.0):
             with self.subTest(theta=theta):
                 biased = self._swept_capture_heading(theta, bias)
                 m0_hx, m0_hy = self._clean_leveled(theta)
+                # register z maps to tool +y (die-flip map is the swap),
+                # so the bias lands on hy with a + sign.
                 predicted = math.degrees(math.atan2(
-                    -m0_hx, m0_hy - bias[2])) % 360.0
+                    -m0_hx, m0_hy + bias[2])) % 360.0
                 self.assertAlmostEqual(biased, predicted, delta=0.5,
                                        msg=f'wall {theta:.0f}°: {biased:.1f} '
                                            f'vs predicted {predicted:.1f}')

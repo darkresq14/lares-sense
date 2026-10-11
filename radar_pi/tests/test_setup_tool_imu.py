@@ -136,13 +136,14 @@ class FakeI2CBus:
 
     def set_pose(self, accel, mag):
         """Set radar-frame accel (g) + mag (arb); converts through the
-        inverse of the axis maps into raw LSB pairs. The AK8975's y
-        register is inverted relative to the accel die in-package
-        (probe-verified live, 2026-10-11) — the driver's
+        inverse of the axis maps into raw LSB pairs. The AK8975 die is
+        flipped 180° about x relative to the accel die in-package
+        (live-replay-verified, 2026-10-11) — the driver's
         apply_mag_axis_map exists to undo exactly this."""
         ax, ay, az = apply_axis_map(*accel)      # radar -> chip (self-inverse)
         mx, my, mz = apply_axis_map(*mag)
-        my = -my                                 # in-package y inversion
+        my = -my                                 # in-package die flip
+        mz = -mz                                 # (180° about x)
         mx += self.mag_bias[0]
         my += self.mag_bias[1]
         mz += self.mag_bias[2]

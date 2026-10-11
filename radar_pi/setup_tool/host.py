@@ -56,10 +56,11 @@ lazily at startup and silently absent when the chip is not there).
 Since issue #15 the host also samples that IMU ~10 Hz **in Config Stage
 only** (silent in Running Stage): measured tilt (pitch/roll in the radar
 frame), the tilt-compensated heading and the Aim Assist wizard state ride
-the same WS stream. The wizard averages a wall capture for ~2 s per wall,
-computes the corner bisector from the two headings (wrap-around-safe,
-valid for any corner angle — no compass calibration: both captures share
-the same constant distortion, so it cancels), then the live indicator
+the same WS stream. The wizard vector-averages each wall capture over a ~10 s full-turn
+sweep (the sweep zeroes the wall-plane components of the body-fixed
+compass bias — the unit plus the installer's watch), computes the
+corner bisector from the two headings (wrap-around-safe, valid for any
+corner angle), then the live indicator
 reports the signed remaining error with a ±2.5° aimed band. A one-click
 "use measured" in the editor adopts the measured tilt into the
 ``sensorPosition`` fields — the Working Config stays untouched until the
