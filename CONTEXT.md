@@ -41,9 +41,11 @@ installer holds and rotates; every angle number comes from the sensor.
 _Avoid_: alignment tool, compass wizard
 
 **Wall Capture**:
-One averaged compass heading taken with the case bottom pressed flush
-against a wall, recording that wall's inward normal. Flushness is the only
-contact requirement; rotation of the unit is free.
+One wall-normal heading recorded by vector-averaging the leveled compass
+field over a full-turn sweep: case bottom pressed flush against the wall,
+one slow rotation in the wall plane. The sweep zeroes the wall-plane
+components of the body-fixed compass bias (unit + installer's watch);
+flushness is the only contact requirement.
 _Avoid_: calibration, wall scan
 
 **Measured Tilt**:

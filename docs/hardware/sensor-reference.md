@@ -341,17 +341,38 @@ unit flat on desk):
   Under the fixed map that pose correctly reads pitch −90 (beam at the
   ceiling); the earlier "flat desk reads level" observation was the
   frame bug's signature, not a verification. Accel noise σ ≈ 0.3°.
-- Compass instantaneous noise σ ≈ 2.5° (strong but **constant** local
-  field). 2 s averaging brings it to ≈ 0.5°.
+- The **AK8975's y register is inverted relative to the accel die** in
+  the same MPU9150 package (probed live 2026-10-11: with the shared map
+  the de-rolled field scattered 30 µT through a roll sweep and wall
+  headings wandered up to 126°; with the compass-specific map,
+  10 µT / 26°). The mag chip→tool map is x→x, y→−z, z→+y
+  (`apply_mag_axis_map`); the accel keeps x→x, y→−z, z→−y.
+- **Hard-iron bias ~10 µT as worn** (the unit plus the installer's
+  watch — probed with sweeps 2026-10-11; the ring is gold, negligible).
+  It is body-fixed but grip-unstable (b_z measured +5.5 vs −11.6 µT
+  across two holds), so it is **not** baked as a constant: a wrong
+  baked bias helps some grips and hurts others.
+- The desk area carries a strong environmental field (|B| 82–119 µT vs
+  ~36–43 µT in air) — wall captures away from the desk.
+- Compass instantaneous noise σ ≈ 2.5°. 2 s averaging brings it to
+  ≈ 0.5°.
 - The radar boresight is **perpendicular to the case's two large faces**
   (bottom/lid). Pressing the flat bottom against a wall makes the
   boresight that wall's inward normal — no aiming skill needed at
   contact; only flushness matters, rotation of the unit is free.
 
-**No compass calibration, ever.** The Aim Assist bisector is the
-difference of two wall-capture headings sharing the same constant local
-distortion, so static error cancels exactly. Do not add a calibration
-wizard.
+**No compass calibration wizard — but not because errors cancel on
+their own.** The original claim (static local distortion cancels between
+the two captures) was falsified live: a body-*fixed* bias bends each
+heading differently per grip and does not cancel. What keeps the
+no-wizard policy honest is the **sweep capture**: each wall is captured
+while the installer rotates the unit one full turn in the wall plane,
+and the capture vector-averages the leveled magnetic field — the
+bias's wall-plane components are additive there and rotate to exactly
+zero mean over a full turn. The component **along the boresight**
+survives any wall-plane rotation by geometry; as worn it leaves a
+~±10° worst-case accuracy floor (captures with the non-watch hand
+shrink it). Do not add a calibration wizard; keep the sweeps.
 
 ### Mounting assumptions (corner installs)
 
@@ -370,8 +391,11 @@ wizard.
 ### Install-time flow (Setup Tool, Config Stage)
 
 1. Unclip the unit from the GoPro/grip mount.
-2. Capture wall A: case bottom flush against wall A → the tool averages
-   the heading ~2 s. Same on wall B.
+2. Capture wall A: case bottom flush against wall A, press capture, then
+   **slowly rotate the unit one full turn in the wall plane** (~10 s —
+   the tool gates on a flush hold, clears the window, and vector-
+   averages the leveled field over the sweep, killing the wall-plane
+   bias). Same on wall B, away from the desk's field.
 3. The tool computes the bisector (valid for any corner angle — the math
    averages the two headings with wrap-around handling). Live
    turn-left/turn-right indicator with remaining error; the aimed band is

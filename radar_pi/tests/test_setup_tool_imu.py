@@ -53,9 +53,11 @@ from tests.test_setup_tool_host import FakeSerialDevice
 from tests.test_setup_tool_stages import FrameFeeder
 
 #: Host IMU tuning for tests: fast sampling + a short window so a pose
-#: change settles in ~0.3 s (the real default is 10 Hz / 2 s).
+#: change settles in ~0.3 s (the real default is 10 Hz / 2 s), and a
+#: short capture so sweep tests stay quick (the real default is 10 s).
 TEST_IMU_INTERVAL = 0.02
 TEST_IMU_WINDOW = 0.3
+TEST_IMU_CAPTURE = 1.0
 
 #: Tolerance for angle assertions through the whole pipe (deg).
 DEG_TOL = 0.2
@@ -128,14 +130,22 @@ class FakeI2CBus:
     def __init__(self):
         self._accel_raw = [0, 0, -16384]  # int16 LSB, chip frame (flat desk)
         self._mag_raw = [0, 1000, 0]      # int16 LSB, chip frame (north-ish)
+        self.mag_bias = (0.0, 0.0, 0.0)   # body-frame hard-iron (arb units)
         self.writes = []                 # (addr, reg, value)
         self.closed = False
 
     def set_pose(self, accel, mag):
         """Set radar-frame accel (g) + mag (arb); converts through the
-        inverse of the lid upside-down axis map into raw LSB pairs."""
+        inverse of the axis maps into raw LSB pairs. The AK8975's y
+        register is inverted relative to the accel die in-package
+        (probe-verified live, 2026-10-11) — the driver's
+        apply_mag_axis_map exists to undo exactly this."""
         ax, ay, az = apply_axis_map(*accel)      # radar -> chip (self-inverse)
         mx, my, mz = apply_axis_map(*mag)
+        my = -my                                 # in-package y inversion
+        mx += self.mag_bias[0]
+        my += self.mag_bias[1]
+        mz += self.mag_bias[2]
         self._accel_raw = [round(a * 16384) for a in (ax, ay, az)]
         self._mag_raw = [round(m * 1000) for m in (mx, my, mz)]
 
@@ -249,7 +259,8 @@ class ImuHostTests(unittest.TestCase):
             apply_frames_timeout=0.8, apply_command_delay=0.0,
             imu=Mpu9150(self.bus) if with_imu else None,
             imu_sample_interval=TEST_IMU_INTERVAL,
-            imu_window_s=TEST_IMU_WINDOW)
+            imu_window_s=TEST_IMU_WINDOW,
+            aim_capture_s=TEST_IMU_CAPTURE)
         self.host.start()
         self.addCleanup(self.host.stop)
         self.port = self.host.actual_port
@@ -348,7 +359,7 @@ class ImuHostTests(unittest.TestCase):
             self.set_pose(0.0)
             self.wait_heading(ws, 0.0)
 
-            # A Start landing mid-capture: the 2 s capture window must
+            # A Start landing mid-capture: the capture window must
             # not leak any aim/imu event into Running Stage.
             ws.send(json.dumps({'type': 'aim_capture', 'wall': 'a'}))
             time.sleep(0.3)              # capture is now mid-await
@@ -367,7 +378,7 @@ class ImuHostTests(unittest.TestCase):
                         and message.get('stage') == 'running':
                     break
             # Everything that arrives from here on is frames/stage only —
-            # the capture window (2 s) outlives the flip, so this drain
+            # the capture window outlives the flip, so this drain
             # covers the interrupted capture's would-be broadcasts.
             deadline = time.monotonic() + 2.5
             while time.monotonic() < deadline:
@@ -405,7 +416,7 @@ class ImuHostTests(unittest.TestCase):
             self.assertAlmostEqual(aim_a['wall_a']['heading'], 350.0,
                                    delta=DEG_TOL)
             self.assertEqual(aim_a['state'], 'half')
-            self.assertGreater(dt_a, 1.0)     # ~2 s capture window
+            self.assertGreater(dt_a, 0.5)     # ~1 s test capture window
             self.assertLess(dt_a, 4.0)
 
             aim_b, _ = self.capture_wall(ws, 'b', 80.0)
@@ -503,6 +514,38 @@ class ImuHostTests(unittest.TestCase):
             stop.set()
             self.assertAlmostEqual(aim['wall_a']['heading'], 100.0,
                                    delta=DEG_TOL)
+
+    def test_sweep_capture_cancels_body_fixed_bias(self):
+        """The sweep capture is the bias killer: with a hard-iron bias of
+        the probe-measured as-worn size (~a third of the field: unit +
+        installer's watch, urad-pi 2026-10-11) a still single-pose
+        heading is off by tens of degrees, but a capture taken while
+        rolling one full turn lands back on the wall normal — the bias
+        term is sinusoidal in the rotation and the circular mean over a
+        full turn cancels it."""
+        self.make_host()
+        self.bus.mag_bias = (0.25, -0.12, 0.0)    # |b|/|B| ≈ 0.3, wall-plane
+        # (chip z deliberately zero: a boresight bias survives any
+        # wall-plane sweep by geometry — see
+        # test_imu_physical_frame.test_boresight_bias_survives_sweeps)
+        with self.ws_connect() as ws:
+            self.recv_of_type(ws, 'stage')
+            stop = threading.Event()
+
+            def sweep():
+                roll = 0
+                while not stop.is_set():
+                    self.set_pose(355.0, 0.0, roll)
+                    roll = (roll + 12) % 360
+                    stop.wait(0.01)
+
+            thread = threading.Thread(target=sweep, daemon=True)
+            thread.start()
+            self.addCleanup(stop.set)
+            aim, _ = self.capture_wall(ws, 'a', 355.0)
+            stop.set()
+            self.assertAlmostEqual(aim['wall_a']['heading'], 355.0,
+                                   delta=3.0)
 
     # ---- page carries the UI (markers, per ADR-0004's manual-verify rule) --
 

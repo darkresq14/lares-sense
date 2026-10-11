@@ -41,7 +41,9 @@ Run from the radar_pi/ directory:
 import math
 import unittest
 
-from setup_tool.imu import apply_axis_map, pitch_roll, tilt_comp_heading, wrap_180
+from setup_tool.imu import (apply_axis_map, apply_mag_axis_map,
+                            leveled_field, pitch_roll, tilt_comp_heading,
+                            wrap_180)
 
 #: Tolerance for the exact synthetic math (deg) — matches DEG_TOL.
 TOL = 0.2
@@ -87,12 +89,17 @@ def _chip_axes(boresight, spin_deg):
 
 
 def _pose_samples(boresight, spin_deg, dip_deg=65.0):
-    """Raw chip-frame accel (g) + mag (arb) for a posed unit."""
+    """Raw chip-frame accel (g) + mag (arb) for a posed unit.
+
+    The AK8975 reports its y register INVERTED relative to the accel die
+    in the same MPU9150 package (probe-verified live, 2026-10-11); the
+    driver's apply_mag_axis_map undoes exactly that.
+    """
     axes = _chip_axes(boresight, spin_deg)
     accel = tuple(_dot(_UP, a) for a in axes)          # +1g on the up axis
     field = (math.cos(math.radians(dip_deg)), 0.0,
              -math.sin(math.radians(dip_deg)))          # dip down, N-ward
-    mag = tuple(_dot(field, a) for a in axes)
+    mag = (_dot(field, axes[0]), -_dot(field, axes[1]), _dot(field, axes[2]))
     return accel, mag
 
 
@@ -100,7 +107,7 @@ def _measure(boresight, spin_deg, dip_deg=65.0):
     """Run the production math path on a physically posed sample."""
     accel, mag = _pose_samples(boresight, spin_deg, dip_deg)
     ax, ay, az = apply_axis_map(*accel)
-    mx, my, mz = apply_axis_map(*mag)
+    mx, my, mz = apply_mag_axis_map(*mag)
     pitch, roll = pitch_roll(ax, ay, az)
     heading = tilt_comp_heading(pitch, roll, mx, my, mz)
     return pitch, roll, heading
@@ -151,6 +158,66 @@ class WallCaptureInvariance(unittest.TestCase):
                     self.assertAlmostEqual(pitch, 15.0, delta=TOL,
                                            msg=f'az {theta:.0f}° spin '
                                                f'{spin}°: pitch {pitch:.1f}°')
+
+    def test_sweep_capture_cancels_body_fixed_bias(self):
+        """A body-fixed hard-iron bias (the unit + the installer's watch,
+        probe-measured ~a third of the field as worn, urad-pi 2026-10-11)
+        bends each single-pose wall heading by tens of degrees — but its
+        wall-plane components are ADDITIVE in the leveled field, and the
+        vector average over a full-turn sweep capture zeroes them
+        exactly, where a heading average keeps a second-order residue
+        (−9.3° measured at this bias size). The chip-z bias is
+        deliberately zero here: along the boresight no wall-plane
+        rotation can see it (that limit is pinned in the test below).
+        This sweep is what keeps the no-calibration policy honest."""
+        bias = (0.25, -0.12, 0.0)
+        for theta in (0.0, 214.0):
+            with self.subTest(theta=theta):
+                mean = self._swept_capture_heading(theta, bias)
+                err = wrap_180(mean - theta)
+                self.assertAlmostEqual(err, 0.0, delta=0.5,
+                                       msg=f'wall {theta:.0f}°: swept '
+                                           f'capture {mean:.1f}° '
+                                           f'(err {err:.1f}°)')
+
+    def test_boresight_bias_survives_sweeps_documented_limit(self):
+        """The accuracy floor, pinned: a bias along the boresight (chip z)
+        is invisible to wall-plane rotation — the swept capture keeps the
+        exact atan2 shift it causes. Not an estimator bug; geometry. As
+        worn this is the ~±10° limit of the hand-held method; the fix is
+        procedure (captures with the non-watch hand), not code."""
+        bias = (0.0, 0.0, 0.12)
+        for theta in (0.0, 214.0):
+            with self.subTest(theta=theta):
+                biased = self._swept_capture_heading(theta, bias)
+                m0_hx, m0_hy = self._clean_leveled(theta)
+                predicted = math.degrees(math.atan2(
+                    -m0_hx, m0_hy - bias[2])) % 360.0
+                self.assertAlmostEqual(biased, predicted, delta=0.5,
+                                       msg=f'wall {theta:.0f}°: {biased:.1f} '
+                                           f'vs predicted {predicted:.1f}')
+
+    def _swept_capture_heading(self, theta, bias):
+        hxs, hys = [], []
+        for spin in range(0, 360, 10):
+            accel, mag = _pose_samples(_bore(theta), spin)
+            mx, my, mz = apply_mag_axis_map(mag[0] + bias[0],
+                                            mag[1] + bias[1],
+                                            mag[2] + bias[2])
+            ax, ay, az = apply_axis_map(*accel)
+            pitch, roll = pitch_roll(ax, ay, az)
+            hx, hy = leveled_field(pitch, roll, mx, my, mz)
+            hxs.append(hx)
+            hys.append(hy)
+        return math.degrees(math.atan2(-sum(hxs) / len(hxs),
+                                       sum(hys) / len(hys))) % 360.0
+
+    def _clean_leveled(self, theta):
+        accel, mag = _pose_samples(_bore(theta), 0)
+        mx, my, mz = apply_mag_axis_map(*mag)
+        ax, ay, az = apply_axis_map(*accel)
+        pitch, roll = pitch_roll(ax, ay, az)
+        return leveled_field(pitch, roll, mx, my, mz)
 
     def test_desk_pose_boresight_up_reads_nose_up_90(self):
         # The probe anchor, reinterpreted in the tool frame: flat on the

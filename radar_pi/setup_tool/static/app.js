@@ -950,7 +950,7 @@ function updateAimPanel() {
   if (s.state === 'capturing') {
     aimLive.className = 'turning';
     aimLive.textContent = 'capturing wall ' + (s.wall || '')
-      .toUpperCase() + '… hold flush, hold still';
+      .toUpperCase() + '… stay flush — rotate one slow full turn';
   }
 }
 

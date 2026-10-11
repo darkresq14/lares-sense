@@ -104,6 +104,7 @@ from setup_tool.imu import (
     bisector,
     pitch_roll,
     tilt_comp_heading,
+    leveled_field,
 )
 from setup_tool.sensor_reset import RESET_BOOT_SETTLE, SensorResetLine
 from setup_tool.udp_forwarder import NullUdpForwarder, UdpForwarder
@@ -220,6 +221,7 @@ class SetupToolHost:
                  apply_command_delay=APPLY_COMMAND_DELAY,
                  imu=None, imu_sample_interval=IMU_SAMPLE_INTERVAL,
                  imu_window_s=IMU_WINDOW_SECONDS,
+                 aim_capture_s=AIM_CAPTURE_SECONDS,
                  sensor_reset=None,
                  reset_boot_settle=RESET_BOOT_SETTLE):
         self._device = device
@@ -282,6 +284,12 @@ class SetupToolHost:
         self._imu = imu
         self._imu_interval = imu_sample_interval
         self._imu_window = RollingImu(imu_window_s)
+        # The sweep ring: wall captures average one slow full-turn sweep
+        # (aim_capture_s) so the body-fixed compass bias — sinusoidal in
+        # the rotation — averages out. The short window above stays snappy
+        # for the live badge and the aim indicator.
+        self._aim_capture_s = aim_capture_s
+        self._imu_sweep = RollingImu(aim_capture_s + 2.0)
         # Aim wizard state — loop-thread only; always replaced whole so
         # the IMU thread's read of self._aim is a single atomic load.
         # states: 'idle' -> 'capturing' (wall) -> 'half' (one captured)
@@ -414,6 +422,8 @@ class SetupToolHost:
                 heading = tilt_comp_heading(pitch, roll,
                                             sample['mx'], sample['my'],
                                             sample['mz'])
+                hx, hy = leveled_field(pitch, roll, sample['mx'],
+                                       sample['my'], sample['mz'])
             except Exception as exc:
                 failures += 1
                 if not self._imu_warned:
@@ -423,7 +433,8 @@ class SetupToolHost:
                 time.sleep(min(1.0, 0.1 * failures))
                 continue
             failures = 0
-            self._imu_window.add(sample['t'], pitch, roll, heading)
+            self._imu_window.add(sample['t'], pitch, roll, heading, hx, hy)
+            self._imu_sweep.add(sample['t'], pitch, roll, heading, hx, hy)
             mean = self._imu_window.mean()
             if mean is not None:
                 self._publish_imu_event(mean)
@@ -475,16 +486,21 @@ class SetupToolHost:
                                           separators=(',', ':')))
 
     async def _handle_aim_capture(self, connection, wall):
-        """One wall capture: average the heading ~2 s, then compute.
+        """One wall capture: average a full-turn sweep, then compute.
 
-        The installer holds the case bottom flush against the wall; the
-        tool averages the tilt-compensated heading for the capture window
-        (compass σ ≈ 2.5° instantaneous, ≈ 0.5° after averaging) and
-        records that wall's inward normal. With both walls captured the
-        corner bisector falls out of the wrap-around-safe heading average
-        — valid for any corner angle, not just 90°. No compass
-        calibration anywhere: both captures share the same constant
-        distortion, so it cancels exactly.
+        The installer presses capture with the case bottom flush against
+        the wall, then slowly rotates the unit one full turn in the wall
+        plane; the tool vector-averages the leveled magnetic field over
+        the sweep window and records that wall's inward normal. The
+        sweep is the bias killer: the unit and the installer's watch
+        carry a body-fixed hard-iron bias (probe-measured ~10 µT as
+        worn) whose wall-plane components are additive in the leveled
+        field and rotate to a zero mean over a full turn — no
+        calibration step anywhere. (The boresight component survives
+        any wall-plane rotation by geometry — the method's accuracy
+        floor, see sensor-reference.) With both walls captured the
+        corner bisector falls out of the wrap-around-safe heading
+        average — valid for any corner angle, not just 90°.
         """
         if self._imu is None:
             await self._send_aim(connection, error='no IMU detected')
@@ -498,7 +514,27 @@ class SetupToolHost:
         self._aim = {**self._aim, 'state': 'capturing', 'wall': wall,
                      'error': None}
         self._broadcast_aim()
-        await asyncio.sleep(AIM_CAPTURE_SECONDS)
+        # Gate on a flush hold before the sweep starts: a capture pressed
+        # from across the room must not average the walk to the wall. On
+        # the wall the beam is the wall normal, so pitch sits near 0.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 2.0 * self._aim_capture_s + 10.0
+        while True:
+            mean = self._imu_window.mean()
+            if mean is not None and abs(mean['pitch']) < 10.0:
+                break
+            if loop.time() >= deadline:
+                self._aim = {**self._aim, 'state': 'half', 'wall': None,
+                             'error': 'no flush hold seen — bottom flat on '
+                                      'the wall, then capture'}
+                self._broadcast_aim()
+                return
+            await asyncio.sleep(0.2)
+        # The sweep window starts NOW: stale samples from before the
+        # flush hold (the previous wall, the walk between walls) must
+        # not ride into the average.
+        self._imu_sweep.clear()
+        await asyncio.sleep(self._aim_capture_s)
         if self._stage == STAGE_RUNNING:
             # A Start landed mid-capture: Running Stage is IMU-silent, so
             # the half-finished capture is dropped and the wizard state
@@ -506,13 +542,13 @@ class SetupToolHost:
             self._aim = {**self._aim, 'state': 'half', 'wall': None,
                          'error': 'capture interrupted — Stop and redo'}
             return
-        mean = self._imu_window.mean()
+        mean = self._imu_sweep.mean()
         if mean is None:
             self._aim = {**self._aim, 'state': 'half', 'wall': None,
                          'error': 'no IMU samples — capture failed'}
             self._broadcast_aim()
             return
-        capture = {'heading': round(mean['heading'], 2),
+        capture = {'heading': round(mean['field_heading'], 2),
                    'at': round(time.time(), 3)}
         new = dict(self._aim)
         new['wall_' + wall] = capture
@@ -535,7 +571,7 @@ class SetupToolHost:
     async def _handle_aim_reset(self, connection):
         """Clear the wizard (a fresh corner, or a redo from scratch)."""
         if self._aim['state'] == 'capturing':
-            return                      # a 2 s window — let it finish
+            return                      # a 10 s sweep — let it finish
         self._aim = _idle_aim()
         self._broadcast_aim()
 

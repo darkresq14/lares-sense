@@ -30,9 +30,18 @@ Three layers, no cross-dependencies:
   aim indicator share (compass noise σ ≈ 2.5° instantaneous; 2 s of
   averaging brings it to ≈ 0.5° in a constant local field).
 
-No compass calibration, ever: the bisector is the difference of two
-headings sharing the same constant distortion, so static error cancels
-exactly. Deliberate — do not add a calibration wizard.
+No compass calibration wizard, ever — but not because errors cancel on
+their own (the original claim; falsified live 2026-10-11): the unit and
+the installer's watch carry a body-FIXED hard-iron bias (~10 µT
+as-worn), which bends each heading differently per grip and does NOT
+cancel between captures. What makes the no-wizard policy survive is the
+sweep capture: each wall is captured while the installer slowly rotates
+the unit one full turn in the wall plane, and the vector average of the
+leveled field (:func:`leveled_field`) zeroes the bias's wall-plane
+components exactly. The component along the boresight is invisible to
+wall-plane rotation by geometry and survives as the method's ~±10°
+accuracy floor as worn (captures with the non-watch hand shrink it).
+Do not add a calibration wizard; keep the sweeps.
 """
 
 import math
@@ -72,8 +81,8 @@ MAG_UT_PER_LSB = 0.3
 #: Aim Assist tuning (issue #15; carried here so the math and the policy
 #: live next to each other).
 IMU_SAMPLE_INTERVAL = 0.1     #: sample cadence, ~10 Hz (Config Stage)
-IMU_WINDOW_SECONDS = 2.0      #: averaging window — σ ≈ 2.5° → ≈ 0.5°
-AIM_CAPTURE_SECONDS = 2.0     #: hold-flush averaging window per wall
+IMU_WINDOW_SECONDS = 2.0      #: live badge/aim window — σ ≈ 2.5° → ≈ 0.5°
+AIM_CAPTURE_SECONDS = 10.0    #: one slow full-turn sweep per wall (below)
 AIM_BAND_DEG = 2.5            #: "aimed" band — ±60° FOV makes it irrelevant
 
 #: Axis map, lid mount: raw chip axes -> tool frame. The chip lies flat on
@@ -91,6 +100,18 @@ AIM_BAND_DEG = 2.5            #: "aimed" band — ±60° FOV makes it irrelevant
 def apply_axis_map(x, y, z):
     """Map raw chip axes into the tool frame (boresight = tool +y)."""
     return x, -z, -y
+
+
+#: The AK8975 compass die reports its z axis INVERTED relative to the
+#: accel die in the same MPU9150 package (probe-verified live on urad-pi,
+#: 2026-10-11: with the shared map the de-rolled field scattered 30 uT
+#: through a roll sweep and wall headings wandered up to 126 deg; with
+#: the z flip, 10 uT and 26 deg — see docs/hardware/sensor-reference.md).
+#: Same lid geometry as the accel map, so it composes with the sign flip:
+#: chip -> tool for the magnetometer is x->x, y->-z, z->+y.
+def apply_mag_axis_map(x, y, z):
+    """Map raw AK8975 axes into the tool frame (z inverted vs the accel)."""
+    return x, -z, y
 
 
 def circular_mean(headings):
@@ -121,6 +142,26 @@ def pitch_roll(ax, ay, az):
     return math.degrees(pitch), math.degrees(roll)
 
 
+def leveled_field(pitch, roll, mx, my, mz):
+    """The magnetic field in the leveled frame — (hx, hy), the two
+    horizontal components after tilt compensation.
+
+    This is the right thing to average over a sweep: a body-fixed bias
+    is ADDITIVE here (and rotates to exactly zero mean over a full-turn
+    sweep), while it bends per-sample headings through atan2 — averaging
+    headings leaves a second-order residue (measured −9.3° at |bias| ≈
+    a third of the field), averaging these does not.
+    """
+    p = math.radians(pitch)
+    r = math.radians(roll)
+    # Level the field: undo roll, then pitch (the exact inverse of the
+    # rotation that turned (0,0,+1) gravity into the measured accel).
+    hx = mx * math.cos(r) - mz * math.sin(r)
+    hy = my * math.cos(p) + math.sin(p) * (mx * math.sin(r)
+                                           + mz * math.cos(r))
+    return hx, hy
+
+
 def tilt_comp_heading(pitch, roll, mx, my, mz):
     """Tilt-compensated compass heading; degrees, 0 ≤ h < 360.
 
@@ -131,13 +172,7 @@ def tilt_comp_heading(pitch, roll, mx, my, mz):
     ``atan2(hy, hx)`` is wrong here — during a wall capture the unit
     rolls ~90°, and any mounted tilt bends the raw reading.
     """
-    p = math.radians(pitch)
-    r = math.radians(roll)
-    # Level the field: undo roll, then pitch (the exact inverse of the
-    # rotation that turned (0,0,+1) gravity into the measured accel).
-    hx = mx * math.cos(r) - mz * math.sin(r)
-    hy = my * math.cos(p) + math.sin(p) * (mx * math.sin(r)
-                                           + mz * math.cos(r))
+    hx, hy = leveled_field(pitch, roll, mx, my, mz)
     return math.degrees(math.atan2(-hx, hy)) % 360.0
 
 
@@ -172,11 +207,13 @@ def aim_error(heading, target):
 # ---- the ~2 s averaging window -------------------------------------------
 
 class RollingImu:
-    """Thread-safe ring of (t, pitch, roll, heading) samples.
+    """Thread-safe ring of (t, pitch, roll, heading, hx, hy) samples.
 
     The IMU thread appends; the asyncio loop reads the window means
     (captures) and the same means feed the published events. The heading
-    mean is circular (wrap-around safe); pitch/roll are arithmetic.
+    mean is circular (wrap-around safe); pitch/roll and the leveled
+    field (hx, hy) are arithmetic — their mean feeds ``field_heading``,
+    the sweep-capture estimator (see :func:`leveled_field`).
     """
 
     def __init__(self, window_s):
@@ -184,10 +221,16 @@ class RollingImu:
         self._samples = deque()
         self._lock = threading.Lock()
 
-    def add(self, t, pitch, roll, heading):
+    def add(self, t, pitch, roll, heading, hx, hy):
         with self._lock:
-            self._samples.append((t, pitch, roll, heading))
+            self._samples.append((t, pitch, roll, heading, hx, hy))
             self._trim(t)
+
+    def clear(self):
+        """Drop all samples — a capture starts its window at the gate,
+        not with whatever the installer was doing before it."""
+        with self._lock:
+            self._samples.clear()
 
     def _trim(self, now):
         horizon = now - self._window_s
@@ -195,7 +238,8 @@ class RollingImu:
             self._samples.popleft()
 
     def mean(self):
-        """Circular-mean heading + arithmetic pitch/roll; None if empty."""
+        """Circular-mean heading + arithmetic pitch/roll/field; None if
+        empty."""
         with self._lock:
             if not self._samples:
                 return None
@@ -205,8 +249,14 @@ class RollingImu:
             heading = samples[-1][3]
         pitch = sum(s[1] for s in samples) / len(samples)
         roll = sum(s[2] for s in samples) / len(samples)
+        hx = sum(s[4] for s in samples) / len(samples)
+        hy = sum(s[5] for s in samples) / len(samples)
+        if math.hypot(hx, hy) < 1e-9:   # degenerate — fall back
+            field_heading = heading
+        else:
+            field_heading = math.degrees(math.atan2(-hx, hy)) % 360.0
         return {'heading': heading, 'pitch': pitch, 'roll': roll,
-                'n': len(samples)}
+                'field_heading': field_heading, 'n': len(samples)}
 
 
 # ---- smbus2 driver --------------------------------------------------------
@@ -285,7 +335,7 @@ class Mpu9150:
         my = mag[1] * MAG_UT_PER_LSB
         mz = mag[2] * MAG_UT_PER_LSB
         ax, ay, az = apply_axis_map(ax, ay, az)
-        mx, my, mz = apply_axis_map(mx, my, mz)
+        mx, my, mz = apply_mag_axis_map(mx, my, mz)
         return {'t': time.monotonic(),
                 'ax': ax, 'ay': ay, 'az': az,
                 'mx': mx, 'my': my, 'mz': mz}
