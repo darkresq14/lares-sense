@@ -324,6 +324,13 @@ See [`esp32-connection.md`](esp32-connection.md) for full wiring and architectur
 
 ## MPU9150 IMU & Aim Assist
 
+> **Geometry superseded**: the axis map below (`x→−x, y→y, z→−z`) was
+> disproved live on 2026-10-11 — two wrong maps shipped because no
+> shared physical picture existed. The verified maps, the full stack
+> layout, mounted pose and frame registry live in
+> [`device-layout.md`](device-layout.md). Treat that page as canonical
+> until `fix/setup-tool-compass-imu` merges.
+
 The unit's case lid carries an **MPU9150** (accelerometer + AK8975
 compass), wired to the Pi's I2C bus 1. Probed facts (urad-pi, Pi 3B,
 unit flat on desk):
