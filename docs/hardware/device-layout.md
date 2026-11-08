@@ -28,6 +28,11 @@ Industrial User Manual p.4–5 + datasheet + IWR-AWR Pi adapter doc
 `[TI]` = TI 3D People Tracking guide / People Counting implementation
 guide / L-SDK CLI reference (same addendum).
 
+Rendered drawing: [`device-drawing.svg`](device-drawing.svg) (top /
+section / front / mounted panes) — regenerate with
+`python docs/hardware/device-drawing.py` after PARAMS changes; facts stay
+here.
+
 ## 1. The stack (inside the case)
 
 Desk pose: case lying flat, **lid up**, ports facing you.
