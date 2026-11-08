@@ -324,33 +324,22 @@ See [`esp32-connection.md`](esp32-connection.md) for full wiring and architectur
 
 ## MPU9150 IMU & Aim Assist
 
-> **Geometry superseded**: the axis map below (`x→−x, y→y, z→−z`) was
-> disproved live on 2026-10-11 — two wrong maps shipped because no
-> shared physical picture existed. The verified maps, the full stack
-> layout, mounted pose and frame registry live in
-> [`device-layout.md`](device-layout.md). Treat that page as canonical
-> until `fix/setup-tool-compass-imu` merges.
-
 The unit's case lid carries an **MPU9150** (accelerometer + AK8975
-compass), wired to the Pi's I2C bus 1. Probed facts (urad-pi, Pi 3B,
-unit flat on desk):
+compass), wired to the Pi's I2C bus 1. **All geometry — mounting,
+axis maps, frames, boresight — lives in
+[`device-layout.md`](device-layout.md)**, canonical over anything here
+and over code docstrings until `fix/setup-tool-compass-imu` merges
+(two wrong axis maps shipped under the old text; see that page's
+§3–§5). Probed facts (urad-pi) that survive unchanged:
 
 - MPU9150 answers WHO_AM_I `0x68` at address `0x68`; the AK8975 answers
   WIA `0x48` at `0x0C` behind the MPU's bypass mode.
-- The MPU is mounted **upside-down on the case lid**; axis map to the
-  radar frame: x→−x, y→y, z→−z. Verified live: flat desk reads pitch
-  +0.5°, roll −2.3°, |g| = 1.000, noise σ ≈ 0.3°.
-- Compass instantaneous noise σ ≈ 2.5° (strong but **constant** local
-  field). 2 s averaging brings it to ≈ 0.5°.
-- The radar boresight is **perpendicular to the case's two large faces**
-  (bottom/lid). Pressing the flat bottom against a wall makes the
-  boresight that wall's inward normal — no aiming skill needed at
-  contact; only flushness matters, rotation of the unit is free.
-
-**No compass calibration, ever.** The Aim Assist bisector is the
-difference of two wall-capture headings sharing the same constant local
-distortion, so static error cancels exactly. Do not add a calibration
-wizard.
+- Accel noise σ ≈ 0.3°; compass instantaneous noise σ ≈ 2.5°, brought
+  to ≈ 0.5° by 2 s averaging.
+- The radar boresight is **perpendicular to the case's two large
+  faces** — pressing the flat bottom flush against a wall makes the
+  boresight that wall's inward normal; flushness is the only contact
+  requirement, rotation of the unit is free.
 
 ### Mounting assumptions (corner installs)
 

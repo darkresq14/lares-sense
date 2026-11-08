@@ -1,17 +1,16 @@
 # Device layout & frames — the physical ground truth
 
-This page is the **single source of truth for the unit's physical
-geometry**: how the boards are stacked, which face points where when
-mounted, and how every coordinate frame in the code relates to the
-case. Orientation bugs on `fix/setup-tool-compass-imu` shipped twice
-because agent and owner held different mental models of this geometry —
-this page exists so that never happens again.
+The **single source of truth for the unit's physical geometry**: board
+stack, case walls, mounts, coordinate frames, axis maps. Two wrong
+axis maps shipped on `fix/setup-tool-compass-imu` because agent and
+owner held different mental models — this page makes the model shared.
 
-**Rule for agents: read this page before touching anything orientation-
-related** (`imu.py`, `overlays.js`, `sensorPosition` fields, point-cloud
-consumers). Never infer axes from code alone — code has been wrong in
-both directions. Every fact below carries a status tag; upgrade tags
-only with new evidence, and record the evidence inline.
+**Read it before touching anything orientation-related** (`imu.py`,
+`overlays.js`, `sensorPosition`, point-cloud consumers). Axes come
+from the tagged facts below, never from code — code has been wrong in
+both directions — and code comments / tests that encode geometry cite
+the fact IDs (S1…S8, M1…M4). Upgrade a tag only with new evidence,
+recorded inline.
 
 Status tags:
 
@@ -102,9 +101,21 @@ stands **on end**: mount end down on the grip, ports end up.
                        in the corner)  .–´
 ```
 
-Top-down: boresight along the **corner bisector**; pole behind the
-boresight, outside the ±60° FOV (diagram in git history of this file's
-first draft, unchanged).
+Top-down (from the ceiling): boresight along the **corner bisector**,
+pole behind the boresight, outside the ±60° FOV.
+
+```
+                wall A
+              ╲
+               ╲   Aim Assist bisector = boresight azimuth
+                ╲      (two Wall Captures, spin-averaged)
+                 ╲    FOV ±60°
+                  ╲  ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬►  radar looks INTO the room
+                   ● pole + grip            along the bisector,
+                  ╱                           ~15° down
+                 ╱
+              wall B
+```
 
 | # | Fact | Status |
 |---|------|--------|
@@ -127,12 +138,11 @@ reads level" check was the frame bug's signature (09fe2fa).
 | **tool / body** (`imu.py`, `overlays.js`) | x right, y = boresight, z up | ⚠ see note | IMU math only |
 | **world** | N, E, Up; heading 0 = N, clockwise viewed from above | — | Aim Assist |
 
-⚠ **Handedness note**: the live-verified chip→tool map has det = −1
-(improper), which is why 09fe2fa called the tool triple "left-handed";
-but the geometric triple x-right/y-forward/z-up cross-checks as
-right-handed. Do **not** resolve this by editing a sign — the map is
-live-pinned `[branch]`. Treat tool-frame x's sign vs radar +X as
-**independent until compared once** in the room preview (§5, last row).
+⚠ **Handedness**: the live chip→tool map is improper (det −1), yet the
+triple x-right/y-forward/z-up reads right-handed — an unresolved
+tension, live-pinned `[branch]`. Sign edits are off-limits; treat tool
+x vs radar +X as independent frames until compared once in the room
+preview (§5, last row).
 
 `sensorPosition <z> <azimTilt> <elevTilt>` signs (TI L-SDK CLI ref):
 azimTilt positive = clockwise viewed toward the ground; **elevTilt
@@ -193,8 +203,6 @@ the boresight. Expect their points at **negative** lateral coordinate
 
 ## 7. How agents use this page
 
-- Before any orientation math: read §1–§5. Cite fact IDs (S1…S8,
-  M1…M4) in code comments and tests when they encode geometry.
 - Synthetic tests **cannot** discriminate frame models: any
   (model, map) pair composing to the same tool frame passes
   (`test_imu_physical_frame.py` header, 8a468cc). Only live fixtures
