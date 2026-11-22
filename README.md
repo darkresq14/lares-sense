@@ -36,7 +36,9 @@ lares-sense/
 │   ├── setup_tool/      Pi-served Setup Tool (live point-cloud page + WS host)
 │   └── tests/           unit + integration tests (run from radar_pi/, see "Running tests")
 ├── docs/
-│   ├── hardware/        sensor reference + host setup guides
+│   ├── device/         physical unit: geometry facts (layout.md) + CAD set
+│   ├── hardware/       sensor reference + wiring/bench guides
+│   ├── guides/         operating guides (systemd install, e2e test)
 │   ├── adr/             architecture decision records
 │   └── agents/          agent-skill config (issue tracker, triage, domain)
 ├── docs_and_tools/      vendor tools + datasheets — NOT in git (see below)
@@ -48,11 +50,14 @@ lares-sense/
 
 | Doc | What it covers |
 |-----|----------------|
-| [`docs/hardware/e2e-test.md`](docs/hardware/e2e-test.md) | Stepwise live pipe test: PC console listener + Pi Setup Tool, no database |
+| [`docs/device/layout.md`](docs/device/layout.md) | Physical ground truth: board stack, walls, mounts, coordinate frames — read before orientation work |
+| [`docs/device/technical-drawing.png`](docs/device/technical-drawing.png) | Engineering drawing sheet + 3D CAD (`model.scad`, printable `enclosure.stl`) |
 | [`docs/hardware/sensor-reference.md`](docs/hardware/sensor-reference.md) | Sensor specs, firmware, UART TLV protocol, Pi 3B UART issue, TI ecosystem |
 | [`docs/hardware/pi-setup.md`](docs/hardware/pi-setup.md) | Raspberry Pi wiring, prerequisites, step-by-step setup, troubleshooting |
 | [`docs/hardware/flashing.md`](docs/hardware/flashing.md) | Reflash firmware over USB (UniFlash): prep, GUI + headless, bench verify, troubleshooting |
 | [`docs/hardware/esp32-connection.md`](docs/hardware/esp32-connection.md) | ESP32 wiring, dual-UART architecture, remote flashing |
+| [`docs/guides/setup-tool-install.md`](docs/guides/setup-tool-install.md) | systemd install on the Pi: auto-start on boot, survive reboots |
+| [`docs/guides/e2e-test.md`](docs/guides/e2e-test.md) | Stepwise live pipe test: PC console listener + Pi Setup Tool, no database |
 
 ## Quick start (Raspberry Pi)
 
@@ -132,7 +137,7 @@ a power blip); with none it enters Config Stage. Stage + sensor health
 (streaming / stopped / reconfiguring / error) are always visible on the page.
 For unattended installs, a systemd unit + install guide ship in
 [`deploy/lares-setup-tool.service`](deploy/lares-setup-tool.service) and
-[docs/hardware/setup-tool-install.md](docs/hardware/setup-tool-install.md).
+[docs/guides/setup-tool-install.md](docs/guides/setup-tool-install.md).
 
 Since issue #14 the connection side is safe for a crowd: **one editing
 session at a time** — the first browser to open the editor owns the
@@ -167,7 +172,7 @@ cd radar_pi
 
 For an unattended install (start on boot, power-blip self-recovery), use the
 systemd unit instead: see
-[docs/hardware/setup-tool-install.md](docs/hardware/setup-tool-install.md).
+[docs/guides/setup-tool-install.md](docs/guides/setup-tool-install.md).
 
 Then open `http://<pi-ip>:8000/` from any browser on the LAN and watch points
 move. The WS messages are `{"type": "frame", "frame": {...}}` where

@@ -1,4 +1,4 @@
-# Setup Tool runtime deps on the Pi (see deploy.sh, docs/hardware/setup-tool-install.md)
+# Setup Tool runtime deps on the Pi (see deploy.sh, docs/guides/setup-tool-install.md)
 pyserial
 websockets>=13
 smbus2

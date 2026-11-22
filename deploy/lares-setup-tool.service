@@ -1,6 +1,6 @@
 # Lares Setup Tool — systemd unit (issue #12).
 #
-# Install (see docs/hardware/setup-tool-install.md for the full walk-through):
+# Install (see docs/guides/setup-tool-install.md for the full walk-through):
 #
 #   sudo cp deploy/lares-setup-tool.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
@@ -19,7 +19,7 @@
 
 [Unit]
 Description=Lares Setup Tool — radar reader, web UI, UDP forwarder
-Documentation=file:///opt/lares-sense/docs/hardware/setup-tool-install.md
+Documentation=file:///opt/lares-sense/docs/guides/setup-tool-install.md
 Wants=network-online.target
 After=network-online.target
 # Do not even try when the UART is not there (sensor box unplugged).

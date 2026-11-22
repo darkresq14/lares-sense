@@ -437,14 +437,14 @@ Green board = **uRAD Industrial v2.0** (datasheet https://urad.es/wp-content/des
 | Link | Status | Evidence |
 |---|---|---|
 | Radar frame -> uRAD board edges (+Y out of top face, +X -> micro-USB corner, +Z -> USB/header edge) | **VERIFIED** | uRAD manual p.4 text + p.5 figure |
-| uRAD board -> blue adapter (which of the 2 connectors, 0 vs 180 deg about +Y) | **GAP** | adapter doc offers 2 options; closes with photo of populated connector (= P-1 / fact S5 in docs/hardware/device-layout.md) |
+| uRAD board -> blue adapter (which of the 2 connectors, 0 vs 180 deg about +Y) | **GAP** | adapter doc offers 2 options; closes with photo of populated connector (= P-1 / fact S5 in docs/device/layout.md) |
 | Adapter -> Pi GPIO (keyed, pin map) | **VERIFIED** | adapter doc pin-interconnection table |
-| Pi -> case (USB/Eth end = ports end, up; SD end down) | given | photo facts (task / docs/hardware/photos/) |
+| Pi -> case (USB/Eth end = ports end, up; SD end down) | given | photo facts (task / docs/device/photos/) |
 
 **Conclusion (lid facing room, ports end up):**
 - **Azimuth 0 / boresight (+Y) points straight out of the lid into the room** -
   not toward ports nor SD end. Premise "x range, y lateral" (also in
-  `docs/hardware/device-layout.md` §3) is **backwards per both TI and Anteral:
+  `docs/device/layout.md` §3) is **backwards per both TI and Anteral:
   Y = range/forward, X = lateral, Z = up.** Read TLVs accordingly.
 - **+Z points toward the ports end** (uRAD +Z edge = USB/header edge -> Pi
   USB/Eth end -> up). Ports-up mounting = +Z up: azimuth frame world-aligned.
@@ -453,7 +453,7 @@ Green board = **uRAD Industrial v2.0** (datasheet https://urad.es/wp-content/des
   RIGHT** (uRAD manual, verbatim above); facing the unit from the room it is
   your LEFT. Which physical case side carries it flips with the S5 plug
   choice - unresolved from docs (GAP above); it is the 180-deg y-flip already
-  flagged in `device-layout.md`.
+  flagged in `layout.md`.
 
 ### sensorPosition signs (AOP_6m_default.cfg)
 

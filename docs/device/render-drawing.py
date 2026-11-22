@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Render technical drawings and 3D STL exports from docs/hardware/device-model.scad.
+"""Render technical drawings and 3D STL exports from docs/device/model.scad.
 
-Outputs (all in docs/hardware/):
-  - device-technical-drawing.png   Multi-view engineering assembly drawing sheet
+Outputs (all in docs/device/):
+  - technical-drawing.png      Multi-view engineering assembly drawing sheet
                                    (exploded assembly + BOM, assembled 3D, open-lid
                                    internal view, orthographic views, mounted pose)
-  - device-assembly.stl            Full 3D solid assembly (GitHub 3D viewer)
-  - device-enclosure.stl           3D-printable enclosure tray + lid laid flat
+  - assembly.stl               Full 3D solid assembly (GitHub 3D viewer)
+  - enclosure.stl              3D-printable enclosure tray + lid laid flat
 
 Usage:
-    python docs/hardware/render-drawing.py
-    python docs/hardware/render-drawing.py --skip-stl   # fast PNG-only iteration
+    python docs/device/render-drawing.py
+    python docs/device/render-drawing.py --skip-stl   # fast PNG-only iteration
 """
 
 import argparse
@@ -25,10 +25,10 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 HERE = Path(__file__).resolve().parent
-SCAD_FILE = HERE / "device-model.scad"
-SHEET_OUT = HERE / "device-technical-drawing.png"
-STL_ASSEMBLY_OUT = HERE / "device-assembly.stl"
-STL_ENCLOSURE_OUT = HERE / "device-enclosure.stl"
+SCAD_FILE = HERE / "model.scad"
+SHEET_OUT = HERE / "technical-drawing.png"
+STL_ASSEMBLY_OUT = HERE / "assembly.stl"
+STL_ENCLOSURE_OUT = HERE / "enclosure.stl"
 
 
 def find_openscad() -> str:
@@ -302,9 +302,9 @@ def compose_sheet(views: dict[str, Path]) -> None:
     draw.text((fx0 + 28, ty0 + 52), "MECHANICAL ASSEMBLY & TECHNICAL DRAWING (3D CAD)", fill=ACC, font=f_body_b)
 
     meta = [
-        ("3D CAD Source:", "docs/hardware/device-model.scad (OpenSCAD parametric)"),
-        ("3D Exports:", "device-assembly.stl (viewer) · device-enclosure.stl (printable)"),
-        ("Fact Truth:", "docs/hardware/device-layout.md (facts S1–S8, M1–M4)"),
+        ("3D CAD Source:", "docs/device/model.scad (OpenSCAD parametric)"),
+        ("3D Exports:", "assembly.stl (viewer) · enclosure.stl (printable)"),
+        ("Fact Truth:", "docs/device/layout.md (facts S1–S8, M1–M4)"),
         ("Radar Frame:", "+Y boresight (out lid) · +X → GPIO wall · +Z → ports wall"),
         ("IMU Axis Map:", "accel (x,−z,−y) · mag (x,z,y) · chip +z INTO case (S2, S3)"),
         ("Units / Notes:", "Millimeters (mm) · * = photo estimate (caliper to upgrade)"),
@@ -385,13 +385,13 @@ def main() -> None:
         compose_sheet(views)
 
     if not args.skip_stl:
-        print("Exporting 3D STL: device-assembly.stl ...")
+        print("Exporting 3D STL: assembly.stl ...")
         run_openscad(oscad, STL_ASSEMBLY_OUT, [
             "-D", 'view_mode="stl_assembly"', "-D", "show_buckle=true", "-D", "$fn=24",
         ])
         print(f"Wrote {STL_ASSEMBLY_OUT} ({STL_ASSEMBLY_OUT.stat().st_size:,} bytes)")
 
-        print("Exporting 3D-printable STL: device-enclosure.stl ...")
+        print("Exporting 3D-printable STL: enclosure.stl ...")
         run_openscad(oscad, STL_ENCLOSURE_OUT, [
             "-D", 'view_mode="stl_enclosure"', "-D", "$fn=32",
         ])

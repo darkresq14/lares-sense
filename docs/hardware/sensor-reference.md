@@ -327,7 +327,7 @@ See [`esp32-connection.md`](esp32-connection.md) for full wiring and architectur
 The unit's case lid carries an **MPU9150** (accelerometer + AK8975
 compass), wired to the Pi's I2C bus 1. **All geometry — mounting,
 axis maps, frames, boresight — lives in
-[`device-layout.md`](device-layout.md)**, canonical over anything here
+[`layout.md`](../device/layout.md)**, canonical over anything here
 and over code docstrings until `fix/setup-tool-compass-imu` merges
 (two wrong axis maps shipped under the old text; see that page's
 §3–§5). Probed facts (urad-pi) that survive unchanged:

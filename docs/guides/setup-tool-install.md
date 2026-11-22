@@ -13,7 +13,7 @@ For bench bring-up without systemd, see the
 ## 0. Prerequisites
 
 - Raspberry Pi OS on the Pi, sensor wired to the GPIO UART
-  ([Pi setup](pi-setup.md), [flashing](flashing.md)).
+  ([Pi setup](../hardware/pi-setup.md), [flashing](../hardware/flashing.md)).
 - Serial console **disabled**, UART **enabled**:
   `sudo raspi-config` → *Interface Options* → *Serial Port* →
   login shell over serial: **No**, serial hardware enabled: **Yes**.
@@ -129,7 +129,7 @@ sessions, not for parking the site overnight.
 |---|---|
 | Unit inactive, `ConditionPathExists=/dev/serial0` failed | Serial hardware not enabled, or sensor box unplugged. |
 | `permission denied` opening the port | `darky` not in `dialout`; serial console still on. |
-| Page loads, "no frames resumed" on Start | Sensor not powered/flashed ([flashing](flashing.md)); check `journalctl`. |
+| Page loads, "no frames resumed" on Start | Sensor not powered/flashed ([flashing](../hardware/flashing.md)); check `journalctl`. |
 | No rows on the server | `LARES_UDP_HOST` unset/wrong; persister not running; firewall on UDP 5005. |
 | Wrong repo path | Adjust `WorkingDirectory`/`ExecStart` in the unit copy. |
 

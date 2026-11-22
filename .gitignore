@@ -7,7 +7,7 @@ __pycache__/
 *.py[cod]
 
 # Photos - local only
-docs/hardware/photos/
+docs/device/photos/
 
 # Server runtime config (radar_persist.py) - holds DSN credentials
 .env

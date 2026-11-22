@@ -2,7 +2,7 @@
 // lares-sense Sensor Unit — Parametric 3D CAD Assembly (OpenSCAD)
 // =============================================================================
 // Single 3D mechanical source of truth for the physical unit.
-// Fact provenance & coordinate frames: docs/hardware/device-layout.md (S1-S8, M1-M4).
+// Fact provenance & coordinate frames: docs/device/layout.md (S1-S8, M1-M4).
 //
 // CAD Coordinate System (Desk Pose — bottom plate on Z=0, lid on top):
 //   +X  SD/mount wall (0)  ->  Ports wall (CASE_L)     [= Radar +Z, up when mounted]
@@ -13,7 +13,7 @@
 // Dimension provenance tags:
 //   [KNOWN] = vendor datasheet / official mechanical drawing
 //   [STD]   = industry standard component dimension
-//   [EST]   = estimated from photos (docs/hardware/photos/); caliper-verify to upgrade
+//   [EST]   = estimated from photos (docs/device/photos/); caliper-verify to upgrade
 //
 // Modes (override via CLI: openscad -D 'view_mode="exploded"' ...):
 //   "assembled"      Closed unit in desk pose (default)
@@ -106,7 +106,7 @@ GP_FINGER_W   = 15.0; // Tab width / outer diameter
 GP_HOLE_D     = 5.2;  // M5 thumbscrew clearance hole
 
 // -----------------------------------------------------------------------------
-// 2. COLOR PALETTE (matches real hardware in docs/hardware/photos/)
+// 2. COLOR PALETTE (matches real hardware in docs/device/photos/)
 // -----------------------------------------------------------------------------
 C_CASE   = [0.09, 0.45, 0.78]; // Royal blue 3D-printed PLA/PETG enclosure
 C_PI_PCB = [0.13, 0.44, 0.22]; // Raspberry Pi green PCB

@@ -193,7 +193,7 @@ cd ~/lares-sense/radar_pi
 ```
 
 Zero output / exit after silence = sensor-side problem (power, wiring,
-firmware — see [pi-setup](pi-setup.md), [flashing](flashing.md)).
+firmware — see [pi-setup](../hardware/pi-setup.md), [flashing](../hardware/flashing.md)).
 
 Raw byte sanity check (any output at all from the sensor). NOTE: after a
 `sensorStop` this firmware never restarts (measured — see the
@@ -231,7 +231,7 @@ EOF"
 | PC receiver dies instantly: `OSError: [WinError 10048]` | Another process already holds UDP 5005 (stale receiver from an earlier session) | PowerShell one-liner in Step 1 ("Port already in use?") kills the holder; then restart receiver |
 | Receiver banner but no frames | UDP blocked by Windows Firewall (Private profile inbound) or wrong `--udp-host` | Allow inbound UDP 5005 for python.exe; verify PC IP with `ipconfig` (use the 192.168.0.x one) |
 | Pi log: "no frames resumed within 15s" | Sensor not streaming | Step 0 `get_throttled`; sensor power/wiring; Plan B raw test |
-| Stop→Start on the page leaves health=error forever | Pre-2026-09-12 builds sent `sensorStop`, which wedges this firmware (see [sensor-reference](sensor-reference.md)); the sensor needs the RST pulse or a Pi reboot | Update the tool (reset-based Start/Stop, `sensor_reset.py`) and restart it |
+| Stop→Start on the page leaves health=error forever | Pre-2026-09-12 builds sent `sensorStop`, which wedges this firmware (see [sensor-reference](../hardware/sensor-reference.md)); the sensor needs the RST pulse or a Pi reboot | Update the tool (reset-based Start/Stop, `sensor_reset.py`) and restart it |
 | `vcgencmd get_throttled` shows `0x50005` etc. | Pi undervoltage — sensor starved | Swap PSU/cable (5V/3A); re-check after fix |
 | `pkill` over ssh kills the ssh session itself (exit 255) | `pkill -f` pattern matches the ssh wrapper's own command line | Always write the pattern with a char class: `'setup_tool[.]host'` |
 | Receiver output lags or looks empty | Python stdout buffered when redirected | Run with `python -u`, or `tail -f` the log file |
@@ -239,7 +239,7 @@ EOF"
 
 ## Related
 
-- [pi-setup.md](pi-setup.md) — wiring, UART config, `read_radar.py`
+- [pi-setup.md](../hardware/pi-setup.md) — wiring, UART config, `read_radar.py`
 - [setup-tool-install.md](setup-tool-install.md) — systemd deployment (auto-start on boot) instead of this manual run
-- [flashing.md](flashing.md) — firmware reflash over USB
+- [flashing.md](../hardware/flashing.md) — firmware reflash over USB
 - README — architecture, `radar_sender.py` (UDP without the Setup Tool), `radar_persist.py` (database instead of console)

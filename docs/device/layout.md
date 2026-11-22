@@ -30,19 +30,19 @@ guide / L-SDK CLI reference (same addendum).
 
 3D CAD & technical drawings (all facts stay here):
 
-- **Parametric 3D CAD source**: [`device-model.scad`](device-model.scad)
+- **Parametric 3D CAD source**: [`model.scad`](model.scad)
   (OpenSCAD — exact piece-by-piece geometry, agent-readable dimensions &
   modes: `assembled`, `exploded`, `open_lid`, `mounted`, `stl_enclosure`).
-- **Engineering drawing sheet**: [`device-technical-drawing.png`](device-technical-drawing.png)
+- **Engineering drawing sheet**: [`technical-drawing.png`](technical-drawing.png)
   (exploded assembly + BOM, assembled 3D + radar frame, open-lid inspection,
   orthographic views, mounted pose) — regenerate with
-  `python docs/hardware/render-drawing.py`.
-- **3D STL exports**: [`device-assembly.stl`](device-assembly.stl) (full
+  `python docs/device/render-drawing.py`.
+- **3D STL exports**: [`assembly.stl`](assembly.stl) (full
   assembly, interactive 3D viewer on GitHub) and
-  [`device-enclosure.stl`](device-enclosure.stl) (extrudable/3D-printable tray
+  [`enclosure.stl`](enclosure.stl) (extrudable/3D-printable tray
   + lid).
-- **2D schematic (legacy)**: [`device-drawing.svg`](device-drawing.svg)
-  (`python docs/hardware/device-drawing.py`).
+- **2D schematic (legacy)**: [`drawing.svg`](drawing.svg)
+  (`python docs/device/drawing.py`).
 
 ## 1. The stack (inside the case)
 
@@ -228,7 +228,7 @@ the boresight. Expect their points at **negative** lateral coordinate
 - New physical change (re-seat the board, new case, IMU moved)?
   Invalidate the affected tags and re-audit (photos again close most).
 
-## 8. Photo index (gitignored — `docs/hardware/photos/`)
+## 8. Photo index (gitignored — `docs/device/photos/`)
 
 | File | Content |
 |------|---------|
