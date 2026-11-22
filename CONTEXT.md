@@ -50,3 +50,9 @@ _Avoid_: calibration, wall scan
 Sensor-derived orientation of the mounted unit, offered to the sensor
 position fields via a one-click adopt rather than continuous auto-sync.
 _Avoid_: auto-tilt, live tilt sync
+
+**Device Viewer**:
+The embeddable interactive 3D mechanical showcase of the physical sensor unit
+(assembled-to-exploded view, orbit/zoom, part inspection) for documentation and
+the product website. Distinct from the Setup Tool and Replay Visualizer.
+_Avoid_: extrudable model, 3D schematic, CAD preview

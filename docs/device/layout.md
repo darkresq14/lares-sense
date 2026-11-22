@@ -37,6 +37,10 @@ guide / L-SDK CLI reference (same addendum).
   (exploded assembly + BOM, assembled 3D + radar frame, open-lid inspection,
   orthographic views, mounted pose) — regenerate with
   `python docs/device/render-drawing.py`.
+- **Interactive 3D web viewer**: [`viewer.html`](viewer.html) +
+  [`device.glb`](device.glb) (multi-part PBR glTF 2.0 with explode slider,
+  orbit/zoom, BOM inspector, dynamic IMU wires, mounted pose & `?embed=1`
+  iframe mode) — regenerate GLB with `python docs/device/export-glb.py`.
 - **3D STL exports**: [`assembly.stl`](assembly.stl) (full
   assembly, interactive 3D viewer on GitHub) and
   [`enclosure.stl`](enclosure.stl) (extrudable/3D-printable tray

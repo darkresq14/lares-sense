@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>lares-sense — Interactive 3D Exploded Product Viewer</title>
+  <style>
+    :root {
+      --bg-top: #f4f6fa;
+      --bg-bot: #e3e8f0;
+      --panel: rgba(255, 255, 255, 0.88);
+      --panel-solid: #ffffff;
+      --border: rgba(26, 35, 58, 0.12);
+      --ink: #141b2d;
+      --muted: #5a657d;
+      --accent: #1668c7;
+      --accent-soft: rgba(22, 104, 199, 0.12);
+      --orange: #c9581a;
+      --radius: 14px;
+      --shadow: 0 10px 30px rgba(20, 27, 45, 0.10);
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%; height: 100%; overflow: hidden;
+      font-family: var(--font);
+      color: var(--ink);
+      background: radial-gradient(circle at 50% 35%, var(--bg-top) 0%, var(--bg-bot) 100%);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    #stage {
+      position: fixed; inset: 0;
+      touch-action: none;
+    }
+    canvas { display: block; width: 100%; height: 100%; }
+
+    /* Top Header */
+    .topbar {
+      position: fixed; top: 16px; left: 16px; right: 16px;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      pointer-events: none; z-index: 20;
+    }
+    .brand {
+      pointer-events: auto;
+      background: var(--panel); backdrop-filter: blur(12px);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 10px 16px; box-shadow: var(--shadow);
+      display: flex; align-items: center; gap: 12px;
+    }
+    .brand-dot {
+      width: 11px; height: 11px; border-radius: 50%;
+      background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft);
+    }
+    .brand h1 { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
+    .brand p { font-size: 12px; color: var(--muted); margin-top: 1px; }
+
+    .toolbar {
+      pointer-events: auto;
+      display: flex; flex-wrap: wrap; gap: 6px;
+      background: var(--panel); backdrop-filter: blur(12px);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 6px; box-shadow: var(--shadow);
+    }
+    .btn {
+      appearance: none; border: 1px solid transparent; background: transparent;
+      color: var(--ink); font: 600 12px/1 var(--font);
+      padding: 8px 11px; border-radius: 9px; cursor: pointer;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+      white-space: nowrap;
+    }
+    .btn:hover { background: rgba(20, 27, 45, 0.06); }
+    .btn.active {
+      background: var(--accent); color: #fff;
+      box-shadow: 0 2px 8px rgba(22, 104, 199, 0.28);
+    }
+    .btn.subtle { border-color: var(--border); background: rgba(255,255,255,0.65); }
+    .sep { width: 1px; background: var(--border); margin: 4px 2px; }
+
+    /* Right BOM Inspector Panel */
+    .sidebar {
+      position: fixed; top: 80px; right: 16px; bottom: 112px; width: 300px;
+      background: var(--panel); backdrop-filter: blur(14px);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      display: flex; flex-direction: column; overflow: hidden;
+      z-index: 15; transition: transform 0.25s ease, opacity 0.25s ease;
+    }
+    .sidebar.hidden { transform: translateX(330px); opacity: 0; pointer-events: none; }
+    .sidebar-hdr {
+      padding: 12px 14px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .sidebar-hdr span { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+    .bom-list { overflow-y: auto; padding: 8px; flex: 1; display: flex; flex-direction: column; gap: 5px; }
+    .bom-item {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 9px 10px; border-radius: 10px; cursor: pointer;
+      border: 1px solid transparent; transition: background 0.15s, border-color 0.15s;
+      text-align: left; background: transparent; width: 100%;
+    }
+    .bom-item:hover { background: rgba(20, 27, 45, 0.045); }
+    .bom-item.selected {
+      background: var(--accent-soft); border-color: rgba(22, 104, 199, 0.35);
+    }
+    .bom-num {
+      flex: 0 0 22px; height: 22px; border-radius: 50%;
+      background: #fff; border: 2px solid var(--orange); color: var(--orange);
+      font-size: 11px; font-weight: 800;
+      display: flex; align-items: center; justify-content: center; margin-top: 1px;
+    }
+    .bom-item.selected .bom-num { background: var(--orange); color: #fff; }
+    .bom-title { font-size: 12.5px; font-weight: 700; color: var(--ink); line-height: 1.25; }
+    .bom-sub { font-size: 11px; color: var(--muted); margin-top: 2px; line-height: 1.3; }
+
+    .inspector-card {
+      border-top: 1px solid var(--border); padding: 12px 14px;
+      background: rgba(244, 247, 252, 0.85);
+      min-height: 98px;
+    }
+    .inspector-card h3 { font-size: 13px; font-weight: 700; color: var(--ink); }
+    .inspector-card .specs { font-size: 11.5px; color: var(--muted); margin-top: 4px; line-height: 1.4; }
+    .inspector-card .facts {
+      display: inline-block; margin-top: 6px; padding: 2px 7px; border-radius: 6px;
+      background: rgba(22, 104, 199, 0.10); color: var(--accent);
+      font-size: 10.5px; font-weight: 700;
+    }
+
+    /* Bottom Explode Slider Dock */
+    .dock {
+      position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+      width: min(640px, calc(100vw - 32px));
+      background: var(--panel); backdrop-filter: blur(14px);
+      border: 1px solid var(--border); border-radius: 18px;
+      padding: 12px 18px; box-shadow: var(--shadow);
+      z-index: 20; display: flex; flex-direction: column; gap: 8px;
+    }
+    .dock-row { display: flex; align-items: center; gap: 12px; }
+    .dock-label {
+      font-size: 12px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.05em; color: var(--muted); white-space: nowrap;
+    }
+    .dock-pct {
+      font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 800;
+      color: var(--accent); min-width: 40px; text-align: right;
+    }
+
+    /* Custom Range Slider */
+    input[type="range"] {
+      -webkit-appearance: none; appearance: none; flex: 1; height: 6px;
+      border-radius: 99px; background: rgba(20, 27, 45, 0.14); outline: none;
+      cursor: pointer;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 22px; height: 22px; border-radius: 50%;
+      background: var(--accent); border: 3px solid #fff;
+      box-shadow: 0 2px 8px rgba(22, 104, 199, 0.45);
+      transition: transform 0.12s;
+    }
+    input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.12); }
+    input[type="range"]::-moz-range-thumb {
+      width: 22px; height: 22px; border-radius: 50%;
+      background: var(--accent); border: 3px solid #fff;
+      box-shadow: 0 2px 8px rgba(22, 104, 199, 0.45);
+    }
+
+    .hint-bar {
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 11px; color: var(--muted);
+    }
+
+    /* 2D Projected 3D Callout Pins */
+    #pins { position: fixed; inset: 0; pointer-events: none; z-index: 10; overflow: hidden; }
+    .pin {
+      position: absolute; transform: translate(-50%, -50%);
+      width: 24px; height: 24px; border-radius: 50%;
+      background: rgba(255, 255, 255, 0.94); border: 2px solid var(--orange);
+      color: var(--orange); font: 800 11px/1 var(--font);
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 3px 10px rgba(0, 0, 0, 0.18);
+      cursor: pointer; pointer-events: auto;
+      transition: transform 0.12s, background 0.12s, color 0.12s;
+    }
+    .pin:hover, .pin.selected {
+      background: var(--orange); color: #fff; transform: translate(-50%, -50%) scale(1.18);
+    }
+
+    /* Loading Overlay */
+    #loader {
+      position: fixed; inset: 0; z-index: 50;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+      background: radial-gradient(circle at 50% 35%, var(--bg-top) 0%, var(--bg-bot) 100%);
+      transition: opacity 0.35s ease;
+    }
+    #loader.done { opacity: 0; pointer-events: none; }
+    .spinner {
+      width: 34px; height: 34px; border-radius: 50%;
+      border: 3px solid rgba(22, 104, 199, 0.18);
+      border-top-color: var(--accent);
+      animation: spin 0.75s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #loader-msg { font-size: 13px; color: var(--muted); font-weight: 600; }
+
+    /* Embed Mode (?embed=1) for clean website iframes */
+    body.embed .brand,
+    body.embed .sidebar { display: none !important; }
+    body.embed .topbar { justify-content: flex-end; }
+    body.embed .dock { bottom: 12px; padding: 10px 14px; }
+
+    @media (max-width: 820px) {
+      .sidebar { display: none; }
+      .brand p { display: none; }
+    }
+  </style>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="loader">
+    <div class="spinner"></div>
+    <div id="loader-msg">Loading 3D assembly (device.glb)…</div>
+  </div>
+
+  <div id="stage"></div>
+  <div id="pins"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-dot"></div>
+      <div>
+        <h1>lares-sense Sensor Unit</h1>
+        <p>Interactive 3D Mechanical Assembly · IWR6843AoP + Raspberry Pi 3B</p>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <button class="btn" data-cam="iso">Isometric</button>
+      <button class="btn" data-cam="ports">Ports</button>
+      <button class="btn" data-cam="top">Top</button>
+      <button class="btn" id="btn-pose" title="Toggle Desk Pose vs Mounted Corner-Install (~15° down)">Mounted</button>
+      <div class="sep"></div>
+      <button class="btn active" id="btn-pins">Pins</button>
+      <button class="btn" id="btn-axes">Radar Frame</button>
+      <button class="btn" id="btn-bom">Parts</button>
+    </div>
+  </header>
+
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-hdr">
+      <span>Bill of Materials (7 Pieces)</span>
+      <button class="btn subtle" id="btn-clear-sel" style="padding:4px 8px;font-size:11px;">Clear</button>
+    </div>
+    <div class="bom-list" id="bom-list"></div>
+    <div class="inspector-card" id="inspector">
+      <h3>Click any component to inspect</h3>
+      <p class="specs">Drag the <b>Explode</b> slider below to separate the enclosure, uRAD 60 GHz radar board, Pi adapter, Raspberry Pi 3B, and MPU-9150 IMU.</p>
+      <span class="facts">Source: docs/device/model.scad</span>
+    </div>
+  </aside>
+
+  <section class="dock" aria-label="Exploded view controls">
+    <div class="dock-row">
+      <button class="btn subtle" id="btn-play" title="Play / Pause explode animation">▶ Play</button>
+      <span class="dock-label">Explode</span>
+      <input type="range" id="explode-slider" min="0" max="100" value="0" step="0.5" aria-label="Explode assembly percentage" />
+      <span class="dock-pct" id="explode-pct">0%</span>
+      <button class="btn subtle" id="btn-snap-0" title="Fully assembled">0%</button>
+      <button class="btn subtle" id="btn-snap-100" title="Fully exploded">100%</button>
+    </div>
+    <div class="hint-bar">
+      <span>Drag to orbit · Scroll / pinch to zoom · Right-drag to pan · Click part to inspect</span>
+      <span id="pose-badge">Desk Pose (Lid Up)</span>
+    </div>
+  </section>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+    // Query options: ?embed=1&explode=40&model=./device.glb
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('embed') === '1') document.body.classList.add('embed');
+    const modelUrl = params.get('model') || './device.glb';
+
+    // --- Renderer & Scene ---
+    const stage = document.getElementById('stage');
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    stage.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+
+    // Studio PBR environment reflections (no external HDRI needed)
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    scene.environmentIntensity = 0.72;
+
+    // Key / Fill / Rim lights
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.45);
+    keyLight.position.set(0.22, 0.38, 0.26);
+    keyLight.castShadow = true;
+    keyLight.shadow.mapSize.set(1024, 1024);
+    keyLight.shadow.camera.near = 0.05;
+    keyLight.shadow.camera.far = 1.2;
+    const d = 0.16;
+    keyLight.shadow.camera.left = -d;
+    keyLight.shadow.camera.right = d;
+    keyLight.shadow.camera.top = d;
+    keyLight.shadow.camera.bottom = -d;
+    keyLight.shadow.bias = -0.0004;
+    scene.add(keyLight);
+
+    const rimLight = new THREE.DirectionalLight(0xdbe8ff, 0.65);
+    rimLight.position.set(-0.25, 0.18, -0.22);
+    scene.add(rimLight);
+
+    scene.add(new THREE.HemisphereLight(0xf6f9ff, 0xcbd4e1, 0.45));
+
+    // Soft contact shadow floor
+    const floorGeo = new THREE.PlaneGeometry(0.8, 0.8);
+    const floorMat = new THREE.ShadowMaterial({ opacity: 0.16 });
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = -0.0185; // bottom of enclosure tray (CASE_H/2 = 17.5mm)
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    // --- Camera & OrbitControls ---
+    const camera = new THREE.PerspectiveCamera(36, window.innerWidth / window.innerHeight, 0.005, 5);
+    camera.position.set(0.155, 0.125, 0.165);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.07;
+    controls.minDistance = 0.07;
+    controls.maxDistance = 0.65;
+    controls.target.set(0, 0.01, 0);
+    controls.update();
+
+    // Smooth camera preset transitions
+    let camAnim = null;
+    function flyCamera(pos, target, durationMs = 520) {
+      camAnim = {
+        start: performance.now(),
+        duration: durationMs,
+        fromPos: camera.position.clone(),
+        toPos: pos.clone(),
+        fromTgt: controls.target.clone(),
+        toTgt: target.clone(),
+      };
+    }
+
+    // --- Assembly Container (handles Desk vs Mounted pose tilt) ---
+    const poseRoot = new THREE.Group();
+    scene.add(poseRoot);
+
+    const parts = [];           // { node, id, extras, basePos, explodeVec, centerLocal, meshes, pinEl }
+    const pickableMeshes = [];  // flat list of Mesh objects for raycasting
+    let selectedPart = null;
+    let hoveredPart = null;
+
+    // --- Dynamic 4-wire IMU harness (Red, Yellow, Green, Black) ---
+    const wireColors = [0xd92626, 0xebc61a, 0x24ad40, 0x222226];
+    const wireMeshes = [];
+    const wireGroup = new THREE.Group();
+    poseRoot.add(wireGroup);
+    for (let i = 0; i < 4; i++) {
+      const m = new THREE.Mesh(
+        new THREE.BufferGeometry(),
+        new THREE.MeshStandardMaterial({ color: wireColors[i], roughness: 0.55, metalness: 0.05 })
+      );
+      wireGroup.add(m);
+      wireMeshes.push(m);
+    }
+
+    function updateImuWires(t) {
+      wireGroup.visible = t > 0.04;
+      if (!wireGroup.visible) return;
+      const imuPart = parts.find(p => p.id === 'mpu9150_imu');
+      const piPart = parts.find(p => p.id === 'raspberry_pi');
+      if (!imuPart || !piPart) return;
+
+      // CAD mm -> glTF m helper (centered at [47, 32.5, 17.5] mm)
+      const c2g = (x, y, z) => new THREE.Vector3((x - 47) * 0.001, (z - 17.5) * 0.001, -(y - 32.5) * 0.001);
+
+      for (let i = 0; i < 4; i++) {
+        // MPU-9150 header pin (moves with imuPart)
+        const pStart = c2g(87.0, 42.0 + i * 2.54, 29.5).add(imuPart.node.position);
+        // Pi GPIO pin-1 end (moves with piPart)
+        const pEnd = c2g(16.0 + i * 2.5, 59.5, 18.0).add(piPart.node.position);
+        // Smooth S-curve bowing slightly out the GPIO wall (+Y_cad -> -Z_gltf)
+        const mid1 = pStart.clone().lerp(pEnd, 0.33);
+        mid1.z -= 0.010 + 0.006 * t;
+        mid1.y -= 0.004 * t;
+        const mid2 = pStart.clone().lerp(pEnd, 0.68);
+        mid2.z -= 0.008 + 0.004 * t;
+
+        const curve = new THREE.CatmullRomCurve3([pStart, mid1, mid2, pEnd]);
+        const newGeo = new THREE.TubeGeometry(curve, 20, 0.0007, 6, false);
+        wireMeshes[i].geometry.dispose();
+        wireMeshes[i].geometry = newGeo;
+      }
+    }
+
+    // --- Vertical Corner Alignment Guide Rails (CAD style) ---
+    const railGroup = new THREE.Group();
+    poseRoot.add(railGroup);
+    const railMat = new THREE.LineDashedMaterial({
+      color: 0x5c6882, dashSize: 0.004, gapSize: 0.003, transparent: true, opacity: 0.0
+    });
+    const cornerXs = [4.5, 89.5];
+    const cornerYs = [4.5, 60.5];
+    const railLines = [];
+    for (const cx of cornerXs) {
+      for (const cy of cornerYs) {
+        const g = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3((cx - 47) * 0.001, (32.5 - 17.5) * 0.001, -(cy - 32.5) * 0.001),
+          new THREE.Vector3((cx - 47) * 0.001, (32.5 + 128 - 17.5) * 0.001, -(cy - 32.5) * 0.001),
+        ]);
+        const line = new THREE.Line(g, railMat);
+        line.computeLineDistances();
+        railGroup.add(line);
+        railLines.push({ line, cx, cy });
+      }
+    }
+    function updateGuideRails(t) {
+      railGroup.visible = t > 0.03;
+      railMat.opacity = Math.min(0.45, t * 0.55);
+      if (!railGroup.visible) return;
+      const topY = (32.5 + 128 * t - 17.5) * 0.001;
+      for (const r of railLines) {
+        const pos = r.line.geometry.attributes.position;
+        pos.setY(1, topY);
+        pos.needsUpdate = true;
+        r.line.computeLineDistances();
+      }
+    }
+
+    // --- Radar Coordinate Frame Triad + +/-60° FOV Cone ---
+    const radarOverlay = new THREE.Group();
+    radarOverlay.visible = false;
+    poseRoot.add(radarOverlay);
+
+    // Origin at IWR6843AoP chip center on lid top: CAD (34.5, 28.5, 36.5) mm
+    const chipOrigin = new THREE.Vector3((34.5 - 47) * 0.001, (36.5 - 17.5) * 0.001, -(28.5 - 32.5) * 0.001);
+    const axesGroup = new THREE.Group();
+    axesGroup.position.copy(chipOrigin);
+    radarOverlay.add(axesGroup);
+
+    // +Y_radar (boresight) = +Z_cad = +Y_gltf (GREEN)
+    axesGroup.add(new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(), 0.055, 0x16b843, 0.010, 0.006));
+    // +X_radar (GPIO wall) = +Y_cad = -Z_gltf (RED)
+    axesGroup.add(new THREE.ArrowHelper(new THREE.Vector3(0, 0, -1), new THREE.Vector3(), 0.045, 0xdd2c2c, 0.009, 0.005));
+    // +Z_radar (ports wall) = +X_cad = +X_gltf (BLUE)
+    axesGroup.add(new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(), 0.045, 0x246be8, 0.009, 0.005));
+
+    // Translucent +/-60 deg FOV cone exiting lid (+Y_gltf)
+    const fovHeight = 0.085;
+    const fovRadius = fovHeight * Math.tan(THREE.MathUtils.degToRad(50));
+    const fovGeo = new THREE.ConeGeometry(fovRadius, fovHeight, 48, 1, true);
+    fovGeo.rotateX(Math.PI); // tip at bottom, widens upward along +Y
+    fovGeo.translate(0, fovHeight / 2, 0);
+    const fovMat = new THREE.MeshBasicMaterial({
+      color: 0xf2711c, transparent: true, opacity: 0.13, side: THREE.DoubleSide, depthWrite: false
+    });
+    const fovCone = new THREE.Mesh(fovGeo, fovMat);
+    axesGroup.add(fovCone);
+
+    // --- Load GLB ---
+    const loader = new GLTFLoader();
+    const loaderEl = document.getElementById('loader');
+    const loaderMsg = document.getElementById('loader-msg');
+    const bomListEl = document.getElementById('bom-list');
+    const pinsContainer = document.getElementById('pins');
+    const inspectorEl = document.getElementById('inspector');
+
+    loader.load(
+      modelUrl,
+      (gltf) => {
+        const root = gltf.scene;
+        poseRoot.add(root);
+
+        // Extract the 7 named component nodes
+        const assemblyNode = root.getObjectByName('lares_sense_assembly') || root;
+        const found = [];
+        for (const child of assemblyNode.children) {
+          if (!child.userData || child.userData.bom == null) continue;
+          const meshes = [];
+          const box = new THREE.Box3();
+          child.traverse((obj) => {
+            if (obj.isMesh) {
+              obj.castShadow = true;
+              obj.receiveShadow = true;
+              // Clone material per part so hover/select emissive highlight is isolated
+              obj.material = obj.material.clone();
+              obj.userData.partId = child.name;
+              meshes.push(obj);
+              pickableMeshes.push(obj);
+              box.expandByObject(obj);
+            }
+          });
+          const centerLocal = new THREE.Vector3();
+          box.getCenter(centerLocal);
+          const off = child.userData.explodeOffset || [0, 0, 0];
+          found.push({
+            id: child.name,
+            node: child,
+            extras: child.userData,
+            basePos: child.position.clone(),
+            explodeVec: new THREE.Vector3(off[0], off[1], off[2]),
+            centerLocal,
+            meshes,
+          });
+        }
+
+        // Sort by BOM # (1..7)
+        found.sort((a, b) => a.extras.bom - b.extras.bom);
+        parts.push(...found);
+
+        // Build BOM sidebar & 2D pins
+        for (const p of parts) {
+          const btn = document.createElement('button');
+          btn.className = 'bom-item';
+          btn.dataset.partId = p.id;
+          btn.innerHTML = `
+            <span class="bom-num">${p.extras.bom}</span>
+            <div>
+              <div class="bom-title">${p.extras.title}</div>
+              <div class="bom-sub">${p.extras.subtitle}</div>
+            </div>`;
+          btn.addEventListener('click', () => selectPart(p, true));
+          btn.addEventListener('mouseenter', () => setHover(p));
+          btn.addEventListener('mouseleave', () => setHover(null));
+          bomListEl.appendChild(btn);
+          p.bomEl = btn;
+
+          const pin = document.createElement('button');
+          pin.className = 'pin';
+          pin.textContent = String(p.extras.bom);
+          pin.title = `${p.extras.bom}. ${p.extras.title}`;
+          pin.addEventListener('click', (e) => { e.stopPropagation(); selectPart(p, false); });
+          pinsContainer.appendChild(pin);
+          p.pinEl = pin;
+        }
+
+        // Optional initial explode from ?explode=N
+        const initExplode = parseFloat(params.get('explode'));
+        if (!Number.isNaN(initExplode)) {
+          setExplodeTarget(THREE.MathUtils.clamp(initExplode / 100, 0, 1));
+        }
+
+        loaderEl.classList.add('done');
+      },
+      undefined,
+      (err) => {
+        console.error(err);
+        loaderMsg.textContent = 'Could not load device.glb — serve via HTTP (e.g. python -m http.server).';
+      }
+    );
+
+    // --- Part Highlight & Inspector ---
+    function refreshHighlights() {
+      for (const p of parts) {
+        const isSel = selectedPart === p;
+        const isHov = hoveredPart === p;
+        for (const m of p.meshes) {
+          if (isSel) {
+            m.material.emissive.setHex(0x1b5fc2);
+            m.material.emissiveIntensity = 0.28;
+          } else if (isHov) {
+            m.material.emissive.setHex(0x2d7ef0);
+            m.material.emissiveIntensity = 0.16;
+          } else {
+            m.material.emissive.setHex(0x000000);
+            m.material.emissiveIntensity = 0.0;
+          }
+        }
+        if (p.bomEl) p.bomEl.classList.toggle('selected', isSel);
+        if (p.pinEl) p.pinEl.classList.toggle('selected', isSel);
+      }
+    }
+
+    function setHover(part) {
+      if (hoveredPart === part) return;
+      hoveredPart = part;
+      renderer.domElement.style.cursor = part ? 'pointer' : 'grab';
+      refreshHighlights();
+    }
+
+    function selectPart(part, autoReveal = false) {
+      selectedPart = (selectedPart === part) ? null : part;
+      refreshHighlights();
+      if (!selectedPart) {
+        inspectorEl.innerHTML = `
+          <h3>Click any component to inspect</h3>
+          <p class="specs">Drag the <b>Explode</b> slider below to separate the enclosure, uRAD 60 GHz radar board, Pi adapter, Raspberry Pi 3B, and MPU-9150 IMU.</p>
+          <span class="facts">Source: docs/device/model.scad</span>`;
+        return;
+      }
+      const ex = selectedPart.extras;
+      inspectorEl.innerHTML = `
+        <h3>#${ex.bom} · ${ex.title}</h3>
+        <p class="specs">${ex.specs}</p>
+        <span class="facts">layout.md Facts: ${ex.facts}</span>`;
+
+      // If user clicked an internal board from the BOM while closed, gently open the stack
+      const internalIds = ['mpu9150_imu', 'urad_board', 'urad_adapter', 'raspberry_pi'];
+      if (autoReveal && internalIds.includes(selectedPart.id) && targetExplode < 0.55) {
+        setExplodeTarget(0.85);
+      }
+    }
+
+    // Raycast click & hover on canvas
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    let downXY = null;
+
+    function hitTest(clientX, clientY) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      const hits = raycaster.intersectObjects(pickableMeshes, false);
+      if (!hits.length) return null;
+      const pid = hits[0].object.userData.partId;
+      return parts.find(p => p.id === pid) || null;
+    }
+
+    renderer.domElement.addEventListener('pointerdown', (e) => {
+      downXY = [e.clientX, e.clientY];
+      camAnim = null; // yield immediately to user orbit
+    });
+    renderer.domElement.addEventListener('pointermove', (e) => {
+      if (e.buttons !== 0) return;
+      setHover(hitTest(e.clientX, e.clientY));
+    });
+    renderer.domElement.addEventListener('pointerup', (e) => {
+      if (!downXY) return;
+      const dist = Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]);
+      downXY = null;
+      if (dist < 5) {
+        selectPart(hitTest(e.clientX, e.clientY), false);
+      }
+    });
+
+    // --- Explode Slider & Play/Pause ---
+    const slider = document.getElementById('explode-slider');
+    const pctEl = document.getElementById('explode-pct');
+    const playBtn = document.getElementById('btn-play');
+
+    let targetExplode = 0;
+    let currentExplode = 0;
+    let isPlaying = false;
+    let playPhase = 0;
+
+    function setExplodeTarget(val01) {
+      targetExplode = THREE.MathUtils.clamp(val01, 0, 1);
+      slider.value = (targetExplode * 100).toFixed(1);
+      pctEl.textContent = `${Math.round(targetExplode * 100)}%`;
+    }
+
+    // Best practice: disable OrbitControls while actively scrubbing slider
+    slider.addEventListener('pointerdown', () => { controls.enabled = false; stopPlay(); });
+    window.addEventListener('pointerup', () => { controls.enabled = true; });
+    slider.addEventListener('input', (e) => {
+      stopPlay();
+      setExplodeTarget(parseFloat(e.target.value) / 100);
+    });
+
+    function stopPlay() {
+      isPlaying = false;
+      playBtn.textContent = '▶ Play';
+      playBtn.classList.remove('active');
+    }
+
+    playBtn.addEventListener('click', () => {
+      isPlaying = !isPlaying;
+      if (isPlaying) {
+        playPhase = Math.acos(1 - 2 * targetExplode);
+        playBtn.textContent = '❚❚ Pause';
+        playBtn.classList.add('active');
+      } else {
+        stopPlay();
+      }
+    });
+
+    document.getElementById('btn-snap-0').addEventListener('click', () => {
+      stopPlay();
+      setExplodeTarget(0);
+      flyCamera(new THREE.Vector3(0.155, 0.125, 0.165), new THREE.Vector3(0, 0.01, 0));
+    });
+    document.getElementById('btn-snap-100').addEventListener('click', () => {
+      stopPlay();
+      setExplodeTarget(1);
+      flyCamera(new THREE.Vector3(0.22, 0.18, 0.24), new THREE.Vector3(0, 0.062, 0));
+    });
+
+    // --- Toolbar Camera & Overlay Buttons ---
+    let showPins = true;
+    let mountedPose = false;
+    let targetTiltZ = 0;
+    let currentTiltZ = 0;
+
+    document.querySelectorAll('[data-cam]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const yOff = currentExplode * 0.055;
+        const c = btn.dataset.cam;
+        if (c === 'iso') flyCamera(new THREE.Vector3(0.16 + currentExplode * 0.06, 0.12 + yOff, 0.17 + currentExplode * 0.06), new THREE.Vector3(0, 0.01 + yOff, 0));
+        if (c === 'ports') flyCamera(new THREE.Vector3(0.22 + currentExplode * 0.06, 0.03 + yOff, 0.0), new THREE.Vector3(0, 0.01 + yOff, 0));
+        if (c === 'top') flyCamera(new THREE.Vector3(0.001, 0.24 + currentExplode * 0.10, 0.02), new THREE.Vector3(0, yOff, 0));
+      });
+    });
+
+    const btnPose = document.getElementById('btn-pose');
+    const poseBadge = document.getElementById('pose-badge');
+    btnPose.addEventListener('click', () => {
+      mountedPose = !mountedPose;
+      btnPose.classList.toggle('active', mountedPose);
+      // Desk pose -> Mounted pose (Facts M1-M4):
+      // +105 deg about +Z puts ports (+X) UP, SD/GoPro (-X) DOWN, lid/boresight (+Y) facing -X tilted 15 deg DOWN.
+      targetTiltZ = mountedPose ? THREE.MathUtils.degToRad(90 + 15) : 0;
+      poseBadge.textContent = mountedPose ? 'Mounted Pose (~15° Down, M1–M4)' : 'Desk Pose (Lid Up)';
+      if (mountedPose) {
+        stopPlay();
+        setExplodeTarget(0);
+        flyCamera(new THREE.Vector3(-0.16, 0.06, 0.18), new THREE.Vector3(0, 0.0, 0));
+      } else {
+        flyCamera(new THREE.Vector3(0.155, 0.125, 0.165), new THREE.Vector3(0, 0.01, 0));
+      }
+    });
+
+    const btnPins = document.getElementById('btn-pins');
+    btnPins.addEventListener('click', () => {
+      showPins = !showPins;
+      btnPins.classList.toggle('active', showPins);
+      pinsContainer.style.display = showPins ? 'block' : 'none';
+    });
+
+    const btnAxes = document.getElementById('btn-axes');
+    btnAxes.addEventListener('click', () => {
+      radarOverlay.visible = !radarOverlay.visible;
+      btnAxes.classList.toggle('active', radarOverlay.visible);
+    });
+
+    const btnBom = document.getElementById('btn-bom');
+    const sidebar = document.getElementById('sidebar');
+    btnBom.classList.add('active');
+    btnBom.addEventListener('click', () => {
+      sidebar.classList.toggle('hidden');
+      btnBom.classList.toggle('active', !sidebar.classList.contains('hidden'));
+    });
+
+    document.getElementById('btn-clear-sel').addEventListener('click', () => selectPart(null));
+
+    // --- Project 3D Part Centers to 2D Callout Pins ---
+    const tmpV = new THREE.Vector3();
+    function updatePins() {
+      if (!showPins || !parts.length) return;
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      for (const p of parts) {
+        tmpV.copy(p.centerLocal);
+        p.node.localToWorld(tmpV);
+        tmpV.project(camera);
+        const visible = tmpV.z > -1 && tmpV.z < 1;
+        p.pinEl.style.display = visible ? 'flex' : 'none';
+        if (visible) {
+          p.pinEl.style.left = `${(tmpV.x * 0.5 + 0.5) * w}px`;
+          p.pinEl.style.top = `${(-tmpV.y * 0.5 + 0.5) * h}px`;
+        }
+      }
+    }
+
+    // --- Render Loop ---
+    let lastTime = performance.now();
+    let wiresDirty = true;
+    function animate(now) {
+      requestAnimationFrame(animate);
+      const dt = Math.min((now - lastTime) / 1000, 0.05);
+      lastTime = now;
+
+      if (isPlaying) {
+        playPhase += dt * 1.15;
+        setExplodeTarget(0.5 - 0.5 * Math.cos(playPhase));
+      }
+
+      // Smooth damped explode interpolation
+      const prevExplode = currentExplode;
+      currentExplode += (targetExplode - currentExplode) * Math.min(1, dt * 10);
+      if (Math.abs(targetExplode - currentExplode) < 0.0004) currentExplode = targetExplode;
+
+      if (parts.length && (Math.abs(currentExplode - prevExplode) > 1e-5 || wiresDirty)) {
+        wiresDirty = false;
+        for (const p of parts) {
+          p.node.position.copy(p.basePos).addScaledVector(p.explodeVec, currentExplode);
+        }
+        // Keep radar frame triad riding on top of the lid as it lifts
+        axesGroup.position.copy(chipOrigin).add(new THREE.Vector3(0, 0.128 * currentExplode, 0));
+        updateImuWires(currentExplode);
+        updateGuideRails(currentExplode);
+      }
+
+      // Smooth Desk <-> Mounted pose rotation
+      currentTiltZ += (targetTiltZ - currentTiltZ) * Math.min(1, dt * 8);
+      poseRoot.rotation.z = currentTiltZ;
+      floor.visible = Math.abs(currentTiltZ) < 0.05;
+
+      // Smooth camera preset fly-to
+      if (camAnim) {
+        const u = Math.min(1, (now - camAnim.start) / camAnim.duration);
+        const ease = 1 - Math.pow(1 - u, 3);
+        camera.position.lerpVectors(camAnim.fromPos, camAnim.toPos, ease);
+        controls.target.lerpVectors(camAnim.fromTgt, camAnim.toTgt, ease);
+        if (u >= 1) camAnim = null;
+      }
+
+      controls.update();
+      renderer.render(scene, camera);
+      updatePins();
+    }
+    requestAnimationFrame(animate);
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>

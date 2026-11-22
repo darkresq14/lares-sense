@@ -26,12 +26,20 @@
 // =============================================================================
 
 view_mode   = "assembled";
+export_part = "";     // Used when view_mode == "export_part"
+export_mat  = "";     // Empty = render all materials; set to filter for GLB export
 show_axes   = false;
 show_fov    = false;
 show_buckle = true;
 explode_gap = 24.0;   // vertical separation between exploded layers (mm)
 
 $fn = 36;
+
+// Material filter helper: behaves identically to color(col) when export_mat == ""
+module mat(name, col) {
+    if (export_mat == "" || export_mat == name)
+        color(col) children();
+}
 
 // -----------------------------------------------------------------------------
 // 1. MASTER PARAMETERS (mm)
@@ -155,7 +163,7 @@ module gopro_two_fingers() {
 // --- PIECE 1: Blue 3D-Printed Enclosure Tray ---
 module enclosure_tray() {
     tray_h = CASE_H - LID_T;
-    color(C_CASE)
+    mat("blue_pla", C_CASE)
     union() {
         difference() {
             // Outer shell
@@ -207,7 +215,7 @@ module enclosure_tray() {
 
 // --- PIECE 2: Blue 3D-Printed Removable Lid + 4 Corner Screws ---
 module enclosure_lid(with_screws = true) {
-    color(C_CASE)
+    mat("blue_pla", C_CASE)
     difference() {
         rounded_box(CASE_L, CASE_W, LID_T, CASE_R);
 
@@ -228,7 +236,7 @@ module enclosure_lid(with_screws = true) {
     }
 
     if (with_screws) {
-        color(C_METAL)
+        mat("metal", C_METAL)
         for (bx = [WALL_T + 1.5, CASE_L - WALL_T - 1.5],
              by = [WALL_T + 1.5, CASE_W - WALL_T - 1.5]) {
             translate([bx, by, LID_T - 1.1])
@@ -240,11 +248,11 @@ module enclosure_lid(with_screws = true) {
 // --- PIECE 3: Raspberry Pi 3 Model B ---
 module raspberry_pi_3b() {
     // PCB
-    color(C_PI_PCB)
+    mat("pi_pcb", C_PI_PCB)
     rounded_box(PI_L, PI_W, PI_T, PI_R);
 
     // Ports along +X edge (Ports Wall): RJ45 at power-wall side, 2x stacked USB-A
-    color(C_METAL) {
+    mat("metal", C_METAL) {
         // RJ45 Ethernet jack (center Y = 10.25 from Pi power edge)
         translate([PI_L - 18.0, 10.25 - 8.0, PI_T])
             cube([21.2, 16.0, 13.5]);
@@ -256,72 +264,72 @@ module raspberry_pi_3b() {
             cube([17.5, 13.5, 15.5]);
     }
     // Dark port interiors for visual realism
-    color(C_IC) {
+    mat("black_ic", C_IC) {
         translate([PI_L + 2.3, 10.25 - 6.0, PI_T + 2.0]) cube([1.0, 12.0, 9.5]);
         for (uy = [29.0, 47.0], uz = [2.0, 9.0])
             translate([PI_L + 1.6, uy - 5.2, PI_T + uz]) cube([1.0, 10.4, 4.5]);
     }
 
     // Ports along -Y edge (Power Wall): micro-USB power, HDMI, 3.5mm audio
-    color(C_METAL) {
+    mat("metal", C_METAL) {
         // Micro-USB power (X = 10.6)
         translate([10.6 - 3.8, -1.2, PI_T]) cube([7.6, 5.5, 3.0]);
         // Full-size HDMI (X = 32.0)
         translate([32.0 - 7.5, -1.5, PI_T]) cube([15.0, 11.5, 6.2]);
     }
-    color(C_IC) {
+    mat("black_ic", C_IC) {
         // 3.5mm Audio/Video jack (X = 53.5)
         translate([53.5 - 3.5, -2.0, PI_T]) cube([7.0, 14.0, 6.0]);
         translate([53.5, -2.5, PI_T + 3.0]) rotate([-90, 0, 0]) cylinder(d = 5.5, h = 2.0);
     }
 
     // 40-pin 2x20 GPIO Header along +Y edge (GPIO Wall)
-    color(C_IC)
+    mat("black_ic", C_IC)
         translate([7.0, PI_W - 6.0, PI_T]) cube([51.0, 5.0, 2.5]);
-    color(C_GOLD)
+    mat("gold", C_GOLD)
         for (i = [0 : 19], j = [0 : 1])
             translate([8.2 + i * 2.54, PI_W - 4.77 + j * 2.54, PI_T + 2.5])
                 cylinder(d = 0.7, h = 6.0, $fn = 8);
 
     // Broadcom SoC + ribbed heatsink (visible in photo 115314449)
-    color(C_IC)
+    mat("black_ic", C_IC)
         translate([22.0, 21.0, PI_T]) cube([14.0, 14.0, 2.0]);
-    color(C_METAL)
+    mat("metal", C_METAL)
         translate([22.0, 21.0, PI_T + 2.0]) cube([14.0, 14.0, 4.5]);
 
     // MicroSD card slot on underside at SD edge (-X)
-    color(C_METAL)
+    mat("metal", C_METAL)
         translate([-1.5, PI_W / 2 - 6.0, -1.8]) cube([14.0, 12.0, 1.8]);
 }
 
 // --- PIECE 4: Blue Anteral uRAD IWR-AWR Pi Adapter PCB + Standoffs ---
 module urad_pi_adapter() {
     // Blue adapter PCB
-    color(C_ADP)
+    mat("adp_pcb", C_ADP)
     rounded_box(ADP_L, ADP_W, ADP_T, 2.0);
 
     // 2x20 female pass-through GPIO header block underneath/along +Y edge
-    color(C_IC)
+    mat("black_ic", C_IC)
         translate([5.0, ADP_W - 5.5, -8.5]) cube([51.0, 5.0, 8.5]);
-    color(C_GOLD)
+    mat("gold", C_GOLD)
         for (i = [0 : 19], j = [0 : 1])
             translate([6.2 + i * 2.54, ADP_W - 4.27 + j * 2.54, ADP_T])
                 cylinder(d = 0.7, h = 2.0, $fn = 8);
 
     // Unpopulated HMC5883L 5-pin pad row (visible on SD side in photo 115300618)
-    color(C_METAL)
+    mat("metal", C_METAL)
         for (i = [0 : 4])
             translate([4.5, 16.0 + i * 2.54, ADP_T])
                 cylinder(d = 1.6, h = 0.2, $fn = 12);
 
     // Shrouded 2x5 10-pin connector (CONNFLY) mating uRAD underneath
-    color(C_IC)
+    mat("black_ic", C_IC)
         translate([URAD_X0 - ADP_X0 + URAD_L - 10.0,
                    URAD_Y0 - ADP_Y0 + 8.0, ADP_T])
             cube([8.5, 18.0, STANDOFF_H]);
 
     // 4x Silver M2.5 hex standoffs supporting the uRAD board
-    color(C_METAL)
+    mat("metal", C_METAL)
     for (sx = [3.5, URAD_L - 3.5], sy = [3.5, URAD_W - 3.5]) {
         translate([URAD_X0 - ADP_X0 + sx, URAD_Y0 - ADP_Y0 + sy, ADP_T])
             cylinder(d = 4.6, h = STANDOFF_H, $fn = 6);
@@ -331,7 +339,7 @@ module urad_pi_adapter() {
 // --- PIECE 5: Green uRAD Industrial v2.0 IWR6843AoP Radar Board ---
 module urad_radar_board() {
     // 42x42 mm green PCB [KNOWN]
-    color(C_URAD)
+    mat("urad_pcb", C_URAD)
     difference() {
         rounded_box(URAD_L, URAD_W, URAD_T, 1.5);
         for (sx = [3.5, URAD_L - 3.5], sy = [3.5, URAD_W - 3.5])
@@ -339,34 +347,34 @@ module urad_radar_board() {
     }
 
     // 4x Silver M2.5 socket-head mounting screws
-    color(C_METAL)
+    mat("metal", C_METAL)
     for (sx = [3.5, URAD_L - 3.5], sy = [3.5, URAD_W - 3.5])
         translate([sx, sy, URAD_T]) cylinder(d = 4.4, h = 2.0);
 
     // TI IWR6843AoP Antenna-on-Package chip (boresight exits +Z top face) [S1, S7]
     chip_lx = CHIP_CX - URAD_X0;
     chip_ly = CHIP_CY - URAD_Y0;
-    color(C_CHIP)
+    mat("chip_dark", C_CHIP)
         translate([chip_lx - CHIP_S / 2, chip_ly - CHIP_S / 2, URAD_T])
             cube([CHIP_S, CHIP_S, CHIP_H]);
     // Subtle lighter antenna patch frame on top of AoP package
-    color([0.34, 0.36, 0.38])
+    mat("chip_patch", [0.34, 0.36, 0.38])
         translate([chip_lx - 5.5, chip_ly - 5.5, URAD_T + CHIP_H])
             cube([11.0, 11.0, 0.15]);
 
     // Micro-USB port at +X (ports) edge, +Y (GPIO-wall) corner [Fact S4]
-    color(C_METAL)
+    mat("metal", C_METAL)
         translate([URAD_L - 6.5, URAD_W - 12.5, URAD_T])
             cube([7.5, 8.0, 2.8]);
 
     // SOP2 Flashing DIP switch (black) + tactile Reset button (white) near -Y edge
-    color(C_IC)
+    mat("black_ic", C_IC)
         translate([12.0, 2.5, URAD_T]) cube([7.0, 4.0, 2.0]);
-    color(C_WHITE)
+    mat("white_btn", C_WHITE)
         translate([7.5, 4.0, URAD_T]) cube([3.2, 3.2, 1.8]);
 
     // CP2105 USB-to-UART bridge & power regulator ICs
-    color(C_IC) {
+    mat("black_ic", C_IC) {
         translate([28.0, 22.0, URAD_T]) cube([4.5, 4.5, 0.9]);
         translate([11.0, 31.0, URAD_T]) cube([5.0, 5.0, 1.2]);
         translate([3.5, 9.5, URAD_T])   cube([4.8, 4.8, 1.4]);
@@ -376,14 +384,14 @@ module urad_radar_board() {
 // --- PIECE 6: MPU-9150 IMU Breakout (GY-521 class, glued under lid) [S2, S8] ---
 module mpu9150_breakout() {
     // PCB sits with top face against lid inner face; chip faces -Z (into case)
-    color(C_IMU)
+    mat("imu_pcb", C_IMU)
         cube([IMU_L, IMU_W, IMU_T]);
     // MPU-9150 QFN die facing -Z (into case) [Fact S2]
-    color(C_IC)
+    mat("black_ic", C_IC)
         translate([IMU_L / 2 - 2.0, IMU_W / 2 - 2.0, -0.9])
             cube([4.0, 4.0, 0.9]);
     // 8-pin header pad row along +X edge
-    color(C_GOLD)
+    mat("gold", C_GOLD)
         for (i = [0 : 7])
             translate([IMU_L - 2.0, 1.6 + i * 2.54, -0.3])
                 cylinder(d = 1.3, h = IMU_T + 0.6, $fn = 10);
@@ -407,7 +415,7 @@ module imu_wires() {
 // --- PIECE 7: Black GoPro Quick-Release Buckle + Thumbscrew (on SD wall) ---
 module gopro_buckle() {
     tray_h = CASE_H - LID_T;
-    color(C_IC)
+    mat("black_ic", C_IC)
     translate([-GP_FINGER_H + GP_FINGER_W / 2, CASE_W / 2, tray_h / 2]) {
         // Center mating tongue between the 2 blue fingers
         translate([-10, -1.5, -7.5]) cube([14, 3.0, 15.0]);
@@ -588,4 +596,21 @@ if (view_mode == "assembled") {
 } else if (view_mode == "stl_enclosure") {
     enclosure_tray();
     translate([0, CASE_W + 10, 0]) enclosure_lid(with_screws = false);
+} else if (view_mode == "export_part") {
+    // Export a single named piece at its exact assembled coordinates (for multi-part GLB)
+    if (export_part == "enclosure_tray") {
+        enclosure_tray();
+    } else if (export_part == "gopro_buckle") {
+        gopro_buckle();
+    } else if (export_part == "raspberry_pi") {
+        translate([PI_X0, PI_Y0, PI_Z0]) raspberry_pi_3b();
+    } else if (export_part == "urad_adapter") {
+        translate([ADP_X0, ADP_Y0, ADP_Z0]) urad_pi_adapter();
+    } else if (export_part == "urad_board") {
+        translate([URAD_X0, URAD_Y0, URAD_Z0]) urad_radar_board();
+    } else if (export_part == "mpu9150_imu") {
+        translate([IMU_X0, IMU_Y0, IMU_Z0]) mpu9150_breakout();
+    } else if (export_part == "enclosure_lid") {
+        translate([0, 0, CASE_H - LID_T]) enclosure_lid(with_screws = true);
+    }
 }

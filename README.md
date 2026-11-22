@@ -36,7 +36,7 @@ lares-sense/
 │   ├── setup_tool/      Pi-served Setup Tool (live point-cloud page + WS host)
 │   └── tests/           unit + integration tests (run from radar_pi/, see "Running tests")
 ├── docs/
-│   ├── device/         physical unit: geometry facts (layout.md) + CAD set
+│   ├── device/         physical unit: geometry facts (layout.md), CAD set & 3D web viewer
 │   ├── hardware/       sensor reference + wiring/bench guides
 │   ├── guides/         operating guides (systemd install, e2e test)
 │   ├── adr/             architecture decision records
@@ -51,6 +51,7 @@ lares-sense/
 | Doc | What it covers |
 |-----|----------------|
 | [`docs/device/layout.md`](docs/device/layout.md) | Physical ground truth: board stack, walls, mounts, coordinate frames — read before orientation work |
+| [`docs/device/README.md`](docs/device/README.md) | **Device Viewer** & 3D CAD assets (`viewer.html`, `device.glb`, `model.scad`) — local preview & website embed guide |
 | [`docs/device/technical-drawing.png`](docs/device/technical-drawing.png) | Engineering drawing sheet + 3D CAD (`model.scad`, printable `enclosure.stl`) |
 | [`docs/hardware/sensor-reference.md`](docs/hardware/sensor-reference.md) | Sensor specs, firmware, UART TLV protocol, Pi 3B UART issue, TI ecosystem |
 | [`docs/hardware/pi-setup.md`](docs/hardware/pi-setup.md) | Raspberry Pi wiring, prerequisites, step-by-step setup, troubleshooting |
@@ -58,6 +59,20 @@ lares-sense/
 | [`docs/hardware/esp32-connection.md`](docs/hardware/esp32-connection.md) | ESP32 wiring, dual-UART architecture, remote flashing |
 | [`docs/guides/setup-tool-install.md`](docs/guides/setup-tool-install.md) | systemd install on the Pi: auto-start on boot, survive reboots |
 | [`docs/guides/e2e-test.md`](docs/guides/e2e-test.md) | Stepwise live pipe test: PC console listener + Pi Setup Tool, no database |
+
+## Device Viewer & 3D CAD (`docs/device/`)
+
+The physical sensor unit is modeled parametrically in [`docs/device/model.scad`](docs/device/model.scad) (single 3D source of truth, pinned to [`docs/device/layout.md`](docs/device/layout.md)). From it we generate both engineering drawings/STLs and an embeddable **Device Viewer** for the future product website:
+
+- **Interactive 3D web viewer**: [`docs/device/viewer.html`](docs/device/viewer.html) + [`docs/device/device.glb`](docs/device/device.glb) (536 KB multi-part glTF 2.0 binary with PBR materials, explode slider, orbit/zoom, BOM inspector, dynamic IMU wires, radar frame/FOV overlay, and mounted-pose toggle).
+- **Website embedding**: drop `viewer.html` + `device.glb` onto any static host and embed with `<iframe src=".../viewer.html?embed=1">`, or load `device.glb` directly in Three.js / `<model-viewer>` using its named part nodes and built-in `"Explode"` animation.
+- **Full integration & regeneration guide**: see [`docs/device/README.md`](docs/device/README.md).
+
+```bash
+# preview the interactive 3D Device Viewer locally
+python -m http.server 8080 -d docs/device
+# open http://localhost:8080/viewer.html  (or ?embed=1 for clean website iframe)
+```
 
 ## Quick start (Raspberry Pi)
 
